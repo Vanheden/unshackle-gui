@@ -575,7 +575,10 @@ class UnshackleGUI(ctk.CTk):
         self._pty_active   = False          # True while PTY process is running
         self._queue_rows: list[ctk.CTkFrame] = []
         self._config_path: Path | None = None
-        self._settings_path = Path(__file__).resolve().parent / "gui_settings.json"
+        if getattr(sys, "frozen", False):
+            self._settings_path = Path(sys.executable).parent / "gui_settings.json"
+        else:
+            self._settings_path = Path(__file__).resolve().parent / "gui_settings.json"
         # Created after UI is built (textboxes must exist first)
         self._pty_renderer: PtyRenderer | None = None
         self._ansi_inline:  AnsiWriter  | None = None
@@ -657,6 +660,10 @@ class UnshackleGUI(ctk.CTk):
         ctk.CTkButton(bar, text="⚡  Preview Command", width=155,
                       fg_color="#4a4a4a", hover_color="#5a5a5a",
                       command=self._preview_command).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bar, text="🗑  Clear Temp", width=120,
+                      fg_color=("#c62828", "#b71c1c"),
+                      hover_color=("#b71c1c", "#7f0000"),
+                      command=self._clear_temp).pack(side="left", padx=(0, 6))
         ctk.CTkButton(bar, text="🗑 Clear", width=80,
                       fg_color="#3a3a3a", hover_color="#4a4a4a",
                       command=lambda: self._clear_box(self._ansi_inline)
@@ -873,6 +880,7 @@ class UnshackleGUI(ctk.CTk):
         self._output_entry.pack(side="left", padx=(0, 6))
         ctk.CTkButton(r, text="Browse…", width=80,
                       command=self._browse_output).pack(side="left")
+
 
         r = _row(f)
         self._no_mux_var    = ctk.BooleanVar()
@@ -1303,6 +1311,67 @@ class UnshackleGUI(ctk.CTk):
         if folder:
             self._output_entry.delete(0, "end")
             self._output_entry.insert(0, folder)
+
+    def _get_temp_dir(self) -> "Path | None":
+        """Return the Temp directory unshackle uses for in-progress downloads."""
+        root = self._project_root_from_cmd()
+        if not getattr(sys, "frozen", False):
+            try:
+                from unshackle.core.config import config as _cfg  # type: ignore
+                t = Path(_cfg.directories.temp)
+                if t.is_absolute():
+                    return t
+                return (root / t) if root else t
+            except Exception:
+                pass
+        if root:
+            for cfg_name in ("unshackle.yaml", ".unshackle.yaml"):
+                cfg_path = root / cfg_name
+                if cfg_path.is_file():
+                    try:
+                        import re as _re
+                        text = cfg_path.read_text(encoding="utf-8", errors="ignore")
+                        m = _re.search(r"^\s*temp:\s*(.+)$", text, _re.MULTILINE)
+                        if m:
+                            val = m.group(1).strip().strip("\"'")
+                            t = Path(val)
+                            return (root / t) if not t.is_absolute() else t
+                    except Exception:
+                        pass
+            return root / "Temp"
+        return None
+
+    def _clear_temp(self) -> None:
+        """Delete all files in unshackle's Temp directory."""
+        import shutil as _shutil
+        temp_dir = self._get_temp_dir()
+        if not temp_dir or not temp_dir.is_dir():
+            messagebox.showinfo(
+                "Clear Temp",
+                f"Temp folder not found:\n{temp_dir}\n\nNothing to delete.")
+            return
+        files = list(temp_dir.iterdir())
+        if not files:
+            messagebox.showinfo("Clear Temp", f"Temp folder is already empty:\n{temp_dir}")
+            return
+        if not messagebox.askyesno(
+            "Clear Temp",
+            f"Delete {len(files)} item(s) from:\n{temp_dir}\n\nThis cannot be undone."
+        ):
+            return
+        errors: list[str] = []
+        for item in files:
+            try:
+                if item.is_dir():
+                    _shutil.rmtree(item)
+                else:
+                    item.unlink()
+            except Exception as exc:
+                errors.append(f"{item.name}: {exc}")
+        if errors:
+            messagebox.showwarning("Clear Temp", "Some items could not be deleted:\n" + "\n".join(errors))
+        else:
+            messagebox.showinfo("Clear Temp", f"Temp folder cleared ({len(files)} item(s) deleted).")
 
     def _stop_process(self) -> None:
         stopped = False
@@ -1759,10 +1828,21 @@ class UnshackleGUI(ctk.CTk):
     # ─────────────────────────────────────────────────────────────────────────
 
     def _try_autoload_config(self) -> None:
-        for candidate in [
-            Path(__file__).parent / "unshackle" / "unshackle.yaml",
-            Path(__file__).parent / "unshackle.yaml",
-        ]:
+        candidates: list[Path] = []
+
+        # Project root via .venv (works for both frozen and non-frozen)
+        root = self._project_root_from_cmd()
+        if root:
+            candidates += [root / "unshackle.yaml", root / "unshackle" / "unshackle.yaml"]
+
+        # Source-run fallback
+        if not getattr(sys, "frozen", False):
+            candidates += [
+                Path(__file__).parent / "unshackle" / "unshackle.yaml",
+                Path(__file__).parent / "unshackle.yaml",
+            ]
+
+        for candidate in candidates:
             if candidate.exists():
                 try:
                     self._config_editor.delete("1.0", "end")
