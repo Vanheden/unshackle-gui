@@ -30,18 +30,19 @@ ctk.set_default_color_theme("blue")
 def _discover_services() -> list[str]:
     """
     Auto-detect installed Unshackle services by scanning the services/ directory.
-    Tries several paths relative to this file and to the unshackle executable,
-    then falls back to a built-in list.
+
+    Priority:
+      1. unshackle Python package — works for any pip/uv install regardless
+         of where the package lives (site-packages, dev editable, etc.)
+      2. importlib: locate the package without importing it (faster, no side
+         effects) — covers frozen / unusual installs
+      3. Relative paths from gui.py — covers running directly next to the repo
+      4. Relative to the unshackle executable in PATH
+      5. Hard-coded fallback list
     """
     import shutil
 
-    _SKIP    = {"__pycache__", "EXAMPLE"}
-    _BUILTIN = [
-        "ABMA", "ADN", "AMZN", "ATV", "CR", "DSMART", "DSNP",
-        "EXXEN", "GLBO", "HIDI", "HMAX", "HPLA", "HULUJP", "ITUNES",
-        "KCW", "KNPY", "MUBI", "NF", "NPO", "PLTV", "PMTP", "SKST",
-        "SVTP", "TOD", "UNEXT", "UNXT", "UPLAY", "VIDO", "VIKI", "VRT", "iQ",
-    ]
+    _SKIP = {"__pycache__", "EXAMPLE"}
 
     def _scan(p: Path) -> list[str] | None:
         if not p.is_dir():
@@ -52,19 +53,40 @@ def _discover_services() -> list[str]:
         )
         return names or None
 
-    gui_dir = Path(__file__).resolve().parent
+    # 1. Ask the installed unshackle package directly — most reliable
+    try:
+        from unshackle.core.config import config as _cfg  # type: ignore
+        for svc_dir in _cfg.directories.services:
+            result = _scan(Path(svc_dir))
+            if result:
+                return result
+    except Exception:
+        pass
 
-    # 1. Relative to gui.py (covers running inside or next to the unshackle repo)
+    # 2. Locate the package via importlib without fully importing it
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("unshackle")
+        if spec and spec.submodule_search_locations:
+            for loc in spec.submodule_search_locations:
+                result = _scan(Path(loc) / "services")
+                if result:
+                    return result
+    except Exception:
+        pass
+
+    # 3. Relative paths from gui.py
+    gui_dir = Path(__file__).resolve().parent
     for rel in (
-        "unshackle/services",         # gui.py is the project root
-        "../unshackle/services",      # gui.py is one level up
-        "../../unshackle/services",   # gui.py is two levels up
+        "unshackle/services",
+        "../unshackle/services",
+        "../../unshackle/services",
     ):
         result = _scan(gui_dir / rel)
         if result is not None:
             return result
 
-    # 2. Relative to the unshackle executable found in PATH
+    # 4. Relative to the unshackle executable found in PATH
     exe = shutil.which("unshackle")
     if exe:
         exe_dir = Path(exe).resolve().parent
@@ -73,7 +95,13 @@ def _discover_services() -> list[str]:
             if result is not None:
                 return result
 
-    return _BUILTIN
+    # 5. Hard-coded fallback — at least something shows up
+    return [
+        "ABMA", "ADN", "AMZN", "ATV", "CR", "DSMART", "DSNP",
+        "EXXEN", "GLBO", "HIDI", "HMAX", "HPLA", "HULUJP", "ITUNES",
+        "KCW", "KNPY", "MUBI", "NF", "NPO", "PLTV", "PMTP", "SKST",
+        "SVTP", "TOD", "UNEXT", "UNXT", "UPLAY", "VIDO", "VIKI", "VRT", "iQ",
+    ]
 
 
 SERVICES = _discover_services()
