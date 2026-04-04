@@ -25,12 +25,57 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-SERVICES = [
-    "ABMA", "ADN", "AMZN", "ATV", "CR", "DSMART", "DSNP",
-    "EXXEN", "GLBO", "HIDI", "HMAX", "HPLA", "HULUJP", "ITUNES",
-    "KCW", "KNPY", "MUBI", "NF", "NPO", "PLTV", "PMTP", "SKST",
-    "SVTP", "TOD", "UNEXT", "UNXT", "UPLAY", "VIDO", "VIKI", "VRT", "iQ",
-]
+
+def _discover_services() -> list[str]:
+    """
+    Auto-detect installed Unshackle services by scanning the services/ directory.
+    Tries several paths relative to this file and to the unshackle executable,
+    then falls back to a built-in list.
+    """
+    import shutil
+
+    _SKIP    = {"__pycache__", "EXAMPLE"}
+    _BUILTIN = [
+        "ABMA", "ADN", "AMZN", "ATV", "CR", "DSMART", "DSNP",
+        "EXXEN", "GLBO", "HIDI", "HMAX", "HPLA", "HULUJP", "ITUNES",
+        "KCW", "KNPY", "MUBI", "NF", "NPO", "PLTV", "PMTP", "SKST",
+        "SVTP", "TOD", "UNEXT", "UNXT", "UPLAY", "VIDO", "VIKI", "VRT", "iQ",
+    ]
+
+    def _scan(p: Path) -> list[str] | None:
+        if not p.is_dir():
+            return None
+        names = sorted(
+            d.name for d in p.iterdir()
+            if d.is_dir() and d.name not in _SKIP and not d.name.startswith(".")
+        )
+        return names or None
+
+    gui_dir = Path(__file__).resolve().parent
+
+    # 1. Relative to gui.py (covers running inside or next to the unshackle repo)
+    for rel in (
+        "unshackle/services",         # gui.py is the project root
+        "../unshackle/services",      # gui.py is one level up
+        "../../unshackle/services",   # gui.py is two levels up
+    ):
+        result = _scan(gui_dir / rel)
+        if result is not None:
+            return result
+
+    # 2. Relative to the unshackle executable found in PATH
+    exe = shutil.which("unshackle")
+    if exe:
+        exe_dir = Path(exe).resolve().parent
+        for rel in ("../unshackle/services", "../../unshackle/services"):
+            result = _scan(exe_dir / rel)
+            if result is not None:
+                return result
+
+    return _BUILTIN
+
+
+SERVICES = _discover_services()
 VIDEO_CODECS = ["H.264", "H.265", "VP9", "AV1", "VC-1", "VP8"]
 AUDIO_CODECS = ["AAC", "DD", "DD+", "FLAC", "DTS", "OPUS", "ALAC"]
 COLOR_RANGES = ["SDR", "HLG", "HDR10", "HDR10+", "DV", "HYBRID"]

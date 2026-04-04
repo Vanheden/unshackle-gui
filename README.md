@@ -44,7 +44,3 @@ Double-click **`build.bat`** — it installs dependencies and produces `dist\uns
 | **Queue** | Schedule multiple downloads to run in order |
 | **Console** | Full-page terminal output |
 | **Config** | Load, edit and save `unshackle.yaml` |
-
-## Supported services
-
-ABMA, ADN, AMZN, ATV, CR, DSMART, DSNP, EXXEN, GLBO, HIDI, HMAX, HPLA, HULUJP, ITUNES, KCW, KNPY, MUBI, NF, NPO, PLTV, PMTP, SKST, SVTP, TOD, UNEXT, UNXT, UPLAY, VIDO, VIKI, VRT, iQ
