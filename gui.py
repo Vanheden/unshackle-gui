@@ -678,30 +678,33 @@ class UnshackleGUI(ctk.CTk):
 
         # ── Video Codec ───────────────────────────────────────────────────────
         _section(f, "Video Codec")
-        r = _row(f)
         self._vcodec_vars: dict[str, ctk.BooleanVar] = {}
-        for c in VIDEO_CODECS:
-            v = ctk.BooleanVar()
-            self._vcodec_vars[c] = v
-            ctk.CTkCheckBox(r, text=c, variable=v, width=72).pack(side="left")
+        for chunk in (VIDEO_CODECS[:3], VIDEO_CODECS[3:]):
+            r = _row(f)
+            for c in chunk:
+                v = ctk.BooleanVar()
+                self._vcodec_vars[c] = v
+                ctk.CTkCheckBox(r, text=c, variable=v, width=88).pack(side="left")
 
         # ── Audio Codec ───────────────────────────────────────────────────────
         _section(f, "Audio Codec")
-        r = _row(f)
         self._acodec_vars: dict[str, ctk.BooleanVar] = {}
-        for c in AUDIO_CODECS:
-            v = ctk.BooleanVar()
-            self._acodec_vars[c] = v
-            ctk.CTkCheckBox(r, text=c, variable=v, width=68).pack(side="left")
+        for chunk in (AUDIO_CODECS[:4], AUDIO_CODECS[4:]):
+            r = _row(f)
+            for c in chunk:
+                v = ctk.BooleanVar()
+                self._acodec_vars[c] = v
+                ctk.CTkCheckBox(r, text=c, variable=v, width=82).pack(side="left")
 
         # ── Color Range ───────────────────────────────────────────────────────
         _section(f, "Color Range")
-        r = _row(f)
         self._range_vars: dict[str, ctk.BooleanVar] = {}
-        for i, rng in enumerate(COLOR_RANGES):
-            v = ctk.BooleanVar(value=(rng == "SDR"))
-            self._range_vars[rng] = v
-            ctk.CTkCheckBox(r, text=rng, variable=v, width=72).pack(side="left")
+        for chunk in (COLOR_RANGES[:3], COLOR_RANGES[3:]):
+            r = _row(f)
+            for rng in chunk:
+                v = ctk.BooleanVar(value=(rng == "SDR"))
+                self._range_vars[rng] = v
+                ctk.CTkCheckBox(r, text=rng, variable=v, width=88).pack(side="left")
 
         # ── Languages ─────────────────────────────────────────────────────────
         _section(f, "Languages")
