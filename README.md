@@ -44,3 +44,5 @@ Double-click **`build.bat`** — it installs dependencies and produces `dist\uns
 | **Queue** | Schedule multiple downloads to run in order |
 | **Console** | Full-page terminal output |
 | **Config** | Load, edit and save `unshackle.yaml` |
+
+## Educational Purpose Only
