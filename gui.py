@@ -1042,13 +1042,7 @@ class UnshackleGUI(ctk.CTk):
             cmd += ["--quality", ",".join(qlist)]
 
         # ── Codecs ────────────────────────────────────────────────────────────
-        def _fmt_vcodec(name: str) -> str:
-            """Strip dots/hyphens when plain-text format is active."""
-            if self._vcodec_plain_var.get():
-                return name.replace(".", "").replace("-", "")
-            return name
-
-        vcodecs = [_fmt_vcodec(c) for c, v in self._vcodec_vars.items() if v.get()]
+        vcodecs = [c for c, v in self._vcodec_vars.items() if v.get()]
         if vcodecs:
             cmd += ["--vcodec", ",".join(vcodecs)]
 
@@ -1344,10 +1338,21 @@ class UnshackleGUI(ctk.CTk):
         env["COLUMNS"] = "200"
         env["LINES"]   = "50"
 
+        # Snapshot output dir before download so we can rename new files after
+        _do_rename = self._vcodec_plain_var.get()
+        _out_dir   = self._get_output_dir() if _do_rename else None
+        _before    = set(_out_dir.iterdir()) if (_out_dir and _out_dir.is_dir()) else set()
+
         if HAS_WINPTY:
             self._run_with_pty(cmd, env)
         else:
             self._run_with_pipe(cmd, env)
+
+        # Post-download: rename codec strings in newly created files
+        if _do_rename and _out_dir and _out_dir.is_dir():
+            for f in set(_out_dir.iterdir()) - _before:
+                if f.is_file():
+                    self._apply_plain_codec_rename(f)
 
     def _run_with_pty(self, cmd: list[str], env: dict[str, str]) -> None:
         """Run via Windows ConPTY — gives rich a real terminal so Live/progress works."""
@@ -1448,6 +1453,36 @@ class UnshackleGUI(ctk.CTk):
 
     def _clear_box(self, writer: "AnsiWriter | PtyRenderer") -> None:
         writer.clear()
+
+    # ── codec plain-text rename helpers ───────────────────────────────────────
+
+    _PLAIN_CODEC_MAP = [
+        ("H.264", "H264"),
+        ("H.265", "H265"),
+        ("VC-1",  "VC1"),
+    ]
+
+    def _get_output_dir(self) -> "Path | None":
+        """Return the directory where unshackle writes downloaded files."""
+        if out := self._output_entry.get().strip():
+            return Path(out)
+        try:
+            from unshackle.core.config import config as _cfg  # type: ignore
+            return Path(_cfg.directories.downloads)
+        except Exception:
+            return None
+
+    def _apply_plain_codec_rename(self, path: Path) -> None:
+        """Rename codec notation in a file path, e.g. H.264 → H264."""
+        new_name = path.name
+        for old, new in self._PLAIN_CODEC_MAP:
+            new_name = new_name.replace(old, new)
+        if new_name != path.name:
+            try:
+                path.rename(path.parent / new_name)
+                self._out_queue.put(f"[Renamed] {path.name}  →  {new_name}\n")
+            except Exception as exc:
+                self._out_queue.put(f"[Rename failed] {path.name}: {exc}\n")
 
     def _update_status(self, text: str, color: str) -> None:
         """Update the status bar label. Thread-safe."""
