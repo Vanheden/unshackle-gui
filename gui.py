@@ -713,6 +713,10 @@ class UnshackleGUI(ctk.CTk):
                 v = ctk.BooleanVar()
                 self._vcodec_vars[c] = v
                 ctk.CTkCheckBox(r, text=c, variable=v, width=88).pack(side="left")
+        r = _row(f)
+        self._vcodec_plain_var = ctk.BooleanVar()
+        ctk.CTkCheckBox(r, text="Plain text format  (H264 instead of H.264)",
+                        variable=self._vcodec_plain_var, width=280).pack(side="left")
 
         # ── Audio Codec ───────────────────────────────────────────────────────
         _section(f, "Audio Codec")
@@ -1038,7 +1042,13 @@ class UnshackleGUI(ctk.CTk):
             cmd += ["--quality", ",".join(qlist)]
 
         # ── Codecs ────────────────────────────────────────────────────────────
-        vcodecs = [c for c, v in self._vcodec_vars.items() if v.get()]
+        def _fmt_vcodec(name: str) -> str:
+            """Strip dots/hyphens when plain-text format is active."""
+            if self._vcodec_plain_var.get():
+                return name.replace(".", "").replace("-", "")
+            return name
+
+        vcodecs = [_fmt_vcodec(c) for c, v in self._vcodec_vars.items() if v.get()]
         if vcodecs:
             cmd += ["--vcodec", ",".join(vcodecs)]
 
@@ -1456,6 +1466,7 @@ class UnshackleGUI(ctk.CTk):
             "profile":          self._profile_combo.get(),
             "quality":          {k: v.get() for k, v in self._quality_vars.items()},
             "vcodec":           {k: v.get() for k, v in self._vcodec_vars.items()},
+            "vcodec_plain":     self._vcodec_plain_var.get(),
             "acodec":           {k: v.get() for k, v in self._acodec_vars.items()},
             "range":            {k: v.get() for k, v in self._range_vars.items()},
             "lang":             self._lang_entry.get(),
@@ -1557,6 +1568,7 @@ class UnshackleGUI(ctk.CTk):
             self._profile_combo.set(prof)
         _set_dict_bool(self._quality_vars,      "quality")
         _set_dict_bool(self._vcodec_vars,       "vcodec")
+        _set_bool(self._vcodec_plain_var,       "vcodec_plain")
         _set_dict_bool(self._acodec_vars,       "acodec")
         _set_dict_bool(self._range_vars,        "range")
         _set_entry(self._lang_entry,            "lang")
