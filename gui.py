@@ -2,6 +2,7 @@
 """Unshackle GUI — Graphical interface for the Unshackle download tool."""
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -284,7 +285,7 @@ class PtyRenderer:
         self._known_tags: set[str] = set()
 
         if HAS_PYTE:
-            self._screen = _pyte.Screen(cols, rows)
+            self._screen = _pyte.HistoryScreen(cols, rows, history=2000)
             self._stream = _pyte.ByteStream(self._screen)
         else:
             self._screen = None
@@ -296,10 +297,14 @@ class PtyRenderer:
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _setup_tags(self, tk: "tk.Text") -> None:  # type: ignore[name-defined]
+        normal_font = ctk.CTkFont(family="Consolas", size=12, weight="normal")
+        bold_font   = ctk.CTkFont(family="Consolas", size=12, weight="bold")
         for name, color in _PYTE_COLORS.items():
-            tag = f"p_{name}"
-            tk.tag_configure(tag, foreground=color)
-            self._known_tags.add(tag)
+            for bold in (False, True):
+                tag = f"pt_p{name}_{'B' if bold else 'n'}"
+                tk.tag_configure(tag, foreground=color,
+                                 font=bold_font if bold else normal_font)
+                self._known_tags.add(tag)
 
     def _color_hex(self, name: str) -> str:
         if not name or name == "default":
@@ -309,13 +314,20 @@ class PtyRenderer:
         return _PYTE_COLORS.get(name, _PYTE_COLORS["default"])
 
     def _ensure_tag(self, tk: "tk.Text", fg: str, bold: bool) -> str:  # type: ignore[name-defined]
+        # Fast path: named colours were pre-registered in _setup_tags
+        prebuilt = f"pt_p{fg}_{'B' if bold else 'n'}"
+        if prebuilt in self._known_tags:
+            return prebuilt
+
+        # Truecolor / 256-colour hex tags: create once across ALL textboxes
         safe = fg.replace("#", "x")
         tag  = f"pt_{safe}_{'B' if bold else 'n'}"
         if tag not in self._known_tags:
             color = self._color_hex(fg)
             font  = ctk.CTkFont(family="Consolas", size=12,
                                  weight="bold" if bold else "normal")
-            tk.tag_configure(tag, foreground=color, font=font)
+            for t in self._tks:
+                t.tag_configure(tag, foreground=color, font=font)
             self._known_tags.add(tag)
         return tag
 
@@ -329,40 +341,46 @@ class PtyRenderer:
             self._stream.feed(raw)
 
     def render(self) -> None:
-        """Render pyte screen to all textboxes. Must be called from main thread."""
+        """Render pyte screen (+ scrollback history) to all textboxes.
+        Must be called from main thread. Preserves scroll position if the
+        user has scrolled up; auto-scrolls only when already at the bottom."""
         if self._screen is None:
             return
 
         with self._lock:
             screen = self._screen
 
-            # Find the last row that has visible content
+            def _snapshot_row(row_dict) -> list[tuple[str, str, bool]]:
+                cells: list[tuple[str, str, bool]] = []
+                for c in range(screen.columns):
+                    ch = row_dict.get(c)
+                    cells.append((ch.data, ch.fg, ch.bold) if ch
+                                  else (" ", "default", False))
+                while cells and cells[-1][0] in (" ", "\x00"):
+                    cells.pop()
+                return cells
+
+            # ── history rows (HistoryScreen.history.top) ──────────────────────
+            rows_data: list[list[tuple[str, str, bool]]] = []
+            if hasattr(screen, "history"):
+                for hist_row in screen.history.top:
+                    rows_data.append(_snapshot_row(hist_row))
+
+            # ── current visible rows ───────────────────────────────────────────
             last_row = -1
             for r in range(screen.lines):
                 if any(c.data.strip() for c in screen.buffer[r].values()):
                     last_row = r
-
-            if last_row < 0:
-                return
-
-            # Snapshot row data (char, fg, bold) — strip trailing spaces per row
-            rows_data: list[list[tuple[str, str, bool]]] = []
             for r in range(last_row + 1):
-                row = screen.buffer[r]
-                cells: list[tuple[str, str, bool]] = []
-                for c in range(screen.columns):
-                    ch = row.get(c)
-                    if ch:
-                        cells.append((ch.data, ch.fg, ch.bold))
-                    else:
-                        cells.append((" ", "default", False))
-                # strip trailing blanks
-                while cells and cells[-1][0] in (" ", "\x00"):
-                    cells.pop()
-                rows_data.append(cells)
+                rows_data.append(_snapshot_row(screen.buffer[r]))
+
+        if not rows_data:
+            return
 
         # ── write to every textbox ─────────────────────────────────────────────
         for box, tk in zip(self._boxes, self._tks):
+            at_bottom = tk.yview()[1] >= 0.99
+
             box.configure(state="normal")
             tk.delete("1.0", "end")
 
@@ -383,7 +401,8 @@ class PtyRenderer:
                         i += 1
                     tk.insert("end", text, (tag,))
 
-            tk.see("end")
+            if at_bottom:
+                tk.see("end")
             box.configure(state="disabled")
 
     def clear(self) -> None:
@@ -497,6 +516,7 @@ class UnshackleGUI(ctk.CTk):
         self._pty_active   = False          # True while PTY process is running
         self._queue_rows: list[ctk.CTkFrame] = []
         self._config_path: Path | None = None
+        self._settings_path = Path(__file__).resolve().parent / "gui_settings.json"
         # Created after UI is built (textboxes must exist first)
         self._pty_renderer: PtyRenderer | None = None
         self._ansi_inline:  AnsiWriter  | None = None
@@ -504,6 +524,8 @@ class UnshackleGUI(ctk.CTk):
 
         self._build_ui()
         self._poll_output()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._load_settings()
 
     # ─────────────────────────────────────────────────────────────────────────
     # UI construction
@@ -512,9 +534,10 @@ class UnshackleGUI(ctk.CTk):
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
 
         self._tabs = ctk.CTkTabview(self, anchor="nw")
-        self._tabs.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        self._tabs.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
 
         for name in ("Download", "Queue", "Console", "Config"):
             self._tabs.add(name)
@@ -523,6 +546,18 @@ class UnshackleGUI(ctk.CTk):
         self._build_queue_tab()
         self._build_console_tab()
         self._build_config_tab()
+
+        # ── Status bar ────────────────────────────────────────────────────────
+        status_bar = ctk.CTkFrame(self, height=28, fg_color=("gray85", "gray17"))
+        status_bar.grid(row=1, column=0, sticky="ew", padx=10, pady=(3, 8))
+        status_bar.grid_propagate(False)
+        self._status_label = ctk.CTkLabel(
+            status_bar, text="Idle",
+            text_color=("#666666", "#888888"),
+            font=ctk.CTkFont(size=12),
+            anchor="w",
+        )
+        self._status_label.pack(side="left", padx=10, pady=4)
 
     # ── Download tab ──────────────────────────────────────────────────────────
 
@@ -591,7 +626,11 @@ class UnshackleGUI(ctk.CTk):
 
         r = _row(f)
         _lbl(r, "Profile")
-        self._profile_entry = _entry(r, width=160, placeholder="default")
+        self._profile_combo = ctk.CTkComboBox(r, values=["default"], width=160)
+        self._profile_combo.pack(side="left", padx=(0, 6))
+        ctk.CTkButton(r, text="↺", width=32, height=28,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._refresh_profiles).pack(side="left")
 
         # ── Quality ───────────────────────────────────────────────────────────
         _section(f, "Quality")
@@ -943,7 +982,8 @@ class UnshackleGUI(ctk.CTk):
         cmd += ["dl"]
 
         # ── Profile ───────────────────────────────────────────────────────────
-        if p := self._profile_entry.get().strip():
+        p = self._profile_combo.get().strip()
+        if p and p != "default":
             cmd += ["--profile", p]
 
         # ── Quality ───────────────────────────────────────────────────────────
@@ -1213,6 +1253,7 @@ class UnshackleGUI(ctk.CTk):
             stopped = True
         if stopped:
             self._out_queue.put("\n[Stopped by user]\n")
+            self._update_status("■ Stopped", ("#e65100", "#ff9800"))
         else:
             messagebox.showinfo("No Process", "No active download to stop.")
 
@@ -1233,6 +1274,7 @@ class UnshackleGUI(ctk.CTk):
                          args=(cmd,), daemon=True).start()
 
     def _run_command_sync(self, cmd: list[str]) -> None:
+        self._update_status("● Downloading…", ("#1565c0", "#4da6ff"))
         self._out_queue.put(f"\n$ {' '.join(cmd)}\n{'─' * 60}\n")
 
         env = os.environ.copy()
@@ -1276,8 +1318,13 @@ class UnshackleGUI(ctk.CTk):
             # Feed a final status line through the normal text queue so it
             # appears after the PTY renderer hands over control.
             self._out_queue.put(f"\n{'─' * 60}\nFinished — exit code {exit_code}\n")
+            if exit_code == 0:
+                self._update_status(f"✓ Done — exit {exit_code}", ("#2e7d32", "#4caf50"))
+            else:
+                self._update_status(f"✗ Failed — exit {exit_code}", ("#b71c1c", "#ef5350"))
         except Exception as exc:
             self._out_queue.put(f"PTY error: {exc}\n")
+            self._update_status("✗ PTY error", ("#b71c1c", "#ef5350"))
         finally:
             self._active_pty  = None
             self._pty_active  = False
@@ -1309,12 +1356,17 @@ class UnshackleGUI(ctk.CTk):
             if buf:
                 self._out_queue.put(buf.decode("utf-8", errors="replace"))
             proc.wait()
-            self._out_queue.put(
-                f"\n{'─' * 60}\nFinished — exit code {proc.returncode}\n")
+            rc = proc.returncode
+            self._out_queue.put(f"\n{'─' * 60}\nFinished — exit code {rc}\n")
+            if rc == 0:
+                self._update_status(f"✓ Done — exit {rc}", ("#2e7d32", "#4caf50"))
+            else:
+                self._update_status(f"✗ Failed — exit {rc}", ("#b71c1c", "#ef5350"))
         except FileNotFoundError:
             self._out_queue.put(
                 "ERROR: 'unshackle' was not found.\n"
                 "Make sure the virtual environment is active and installed.\n")
+            self._update_status("✗ unshackle not found", ("#b71c1c", "#ef5350"))
         finally:
             self._active_proc = None
 
@@ -1342,6 +1394,187 @@ class UnshackleGUI(ctk.CTk):
     def _clear_box(self, writer: "AnsiWriter | PtyRenderer") -> None:
         writer.clear()
 
+    def _update_status(self, text: str, color: str) -> None:
+        """Update the status bar label. Thread-safe."""
+        self.after(0, lambda: self._status_label.configure(
+            text=text, text_color=color))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Settings persistence
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _settings_get(self) -> dict:
+        return {
+            "window_geometry":  self.geometry(),
+            "service":          self._service_var.get(),
+            "title":            self._title_entry.get(),
+            "profile":          self._profile_combo.get(),
+            "quality":          {k: v.get() for k, v in self._quality_vars.items()},
+            "vcodec":           {k: v.get() for k, v in self._vcodec_vars.items()},
+            "acodec":           {k: v.get() for k, v in self._acodec_vars.items()},
+            "range":            {k: v.get() for k, v in self._range_vars.items()},
+            "lang":             self._lang_entry.get(),
+            "alang":            self._alang_entry.get(),
+            "vlang":            self._vlang_entry.get(),
+            "slang":            self._slang_entry.get(),
+            "require_subs":     self._require_subs_entry.get(),
+            "forced_subs":      self._forced_subs_var.get(),
+            "exact_lang":       self._exact_lang_var.get(),
+            "wanted":           self._wanted_entry.get(),
+            "latest_ep":        self._latest_ep_var.get(),
+            "select_titles":    self._select_titles_var.get(),
+            "video_only":       self._video_only_var.get(),
+            "audio_only":       self._audio_only_var.get(),
+            "subs_only":        self._subs_only_var.get(),
+            "chapters_only":    self._chapters_only_var.get(),
+            "no_video":         self._no_video_var.get(),
+            "no_audio":         self._no_audio_var.get(),
+            "no_subs":          self._no_subs_var.get(),
+            "no_chapters":      self._no_chapters_var.get(),
+            "audio_desc":       self._audio_desc_var.get(),
+            "no_atmos":         self._no_atmos_var.get(),
+            "split_audio":      self._split_audio_var.get(),
+            "sub_format":       self._sub_format_combo.get(),
+            "tag":              self._tag_entry.get(),
+            "tmdb":             self._tmdb_entry.get(),
+            "imdb":             self._imdb_entry.get(),
+            "animeapi":         self._animeapi_entry.get(),
+            "repack":           self._repack_var.get(),
+            "enrich":           self._enrich_var.get(),
+            "output":           self._output_entry.get(),
+            "no_mux":           self._no_mux_var.get(),
+            "no_folder":        self._no_folder_var.get(),
+            "no_source":        self._no_source_var.get(),
+            "downloads":        self._downloads_entry.get(),
+            "workers":          self._workers_entry.get(),
+            "slow":             self._slow_entry.get(),
+            "vbitrate":         self._vbitrate_entry.get(),
+            "abitrate":         self._abitrate_entry.get(),
+            "vbitrate_range":   self._vbitrate_range_entry.get(),
+            "abitrate_range":   self._abitrate_range_entry.get(),
+            "channels":         self._channels_entry.get(),
+            "worst":            self._worst_var.get(),
+            "best_available":   self._best_available_var.get(),
+            "cdm_only":         self._cdm_only_var.get(),
+            "vaults_only":      self._vaults_only_var.get(),
+            "skip_dl":          self._skip_dl_var.get(),
+            "export":           self._export_var.get(),
+            "list":             self._list_var.get(),
+            "list_titles":      self._list_titles_var.get(),
+            "debug":            self._debug_var.get(),
+            "no_cache":         self._no_cache_var.get(),
+            "reset_cache":      self._reset_cache_var.get(),
+            "proxy":            self._proxy_entry.get(),
+            "no_proxy":         self._no_proxy_var.get(),
+            "remote":           self._remote_var.get(),
+            "server":           self._server_entry.get(),
+        }
+
+    def _save_settings(self) -> None:
+        try:
+            self._settings_path.write_text(
+                json.dumps(self._settings_get(), indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_settings(self) -> None:
+        if not self._settings_path.exists():
+            return
+        try:
+            s = json.loads(self._settings_path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        if geo := s.get("window_geometry"):
+            try:
+                self.geometry(geo)
+            except Exception:
+                pass
+
+        def _set_entry(widget, key: str) -> None:
+            val = s.get(key, "")
+            widget.delete(0, "end")
+            widget.insert(0, str(val))
+
+        def _set_bool(var, key: str) -> None:
+            var.set(bool(s.get(key, False)))
+
+        def _set_dict_bool(d: dict, key: str) -> None:
+            stored = s.get(key, {})
+            for k, var in d.items():
+                if k in stored:
+                    var.set(bool(stored[k]))
+
+        if svc := s.get("service"):
+            self._service_var.set(svc)
+        _set_entry(self._title_entry,           "title")
+        if prof := s.get("profile"):
+            self._profile_combo.set(prof)
+        _set_dict_bool(self._quality_vars,      "quality")
+        _set_dict_bool(self._vcodec_vars,       "vcodec")
+        _set_dict_bool(self._acodec_vars,       "acodec")
+        _set_dict_bool(self._range_vars,        "range")
+        _set_entry(self._lang_entry,            "lang")
+        _set_entry(self._alang_entry,           "alang")
+        _set_entry(self._vlang_entry,           "vlang")
+        _set_entry(self._slang_entry,           "slang")
+        _set_entry(self._require_subs_entry,    "require_subs")
+        _set_bool(self._forced_subs_var,        "forced_subs")
+        _set_bool(self._exact_lang_var,         "exact_lang")
+        _set_entry(self._wanted_entry,          "wanted")
+        _set_bool(self._latest_ep_var,          "latest_ep")
+        _set_bool(self._select_titles_var,      "select_titles")
+        _set_bool(self._video_only_var,         "video_only")
+        _set_bool(self._audio_only_var,         "audio_only")
+        _set_bool(self._subs_only_var,          "subs_only")
+        _set_bool(self._chapters_only_var,      "chapters_only")
+        _set_bool(self._no_video_var,           "no_video")
+        _set_bool(self._no_audio_var,           "no_audio")
+        _set_bool(self._no_subs_var,            "no_subs")
+        _set_bool(self._no_chapters_var,        "no_chapters")
+        _set_bool(self._audio_desc_var,         "audio_desc")
+        _set_bool(self._no_atmos_var,           "no_atmos")
+        _set_bool(self._split_audio_var,        "split_audio")
+        if sf := s.get("sub_format"):
+            self._sub_format_combo.set(sf)
+        _set_entry(self._tag_entry,             "tag")
+        _set_entry(self._tmdb_entry,            "tmdb")
+        _set_entry(self._imdb_entry,            "imdb")
+        _set_entry(self._animeapi_entry,        "animeapi")
+        _set_bool(self._repack_var,             "repack")
+        _set_bool(self._enrich_var,             "enrich")
+        _set_entry(self._output_entry,          "output")
+        _set_bool(self._no_mux_var,             "no_mux")
+        _set_bool(self._no_folder_var,          "no_folder")
+        _set_bool(self._no_source_var,          "no_source")
+        _set_entry(self._downloads_entry,       "downloads")
+        _set_entry(self._workers_entry,         "workers")
+        _set_entry(self._slow_entry,            "slow")
+        _set_entry(self._vbitrate_entry,        "vbitrate")
+        _set_entry(self._abitrate_entry,        "abitrate")
+        _set_entry(self._vbitrate_range_entry,  "vbitrate_range")
+        _set_entry(self._abitrate_range_entry,  "abitrate_range")
+        _set_entry(self._channels_entry,        "channels")
+        _set_bool(self._worst_var,              "worst")
+        _set_bool(self._best_available_var,     "best_available")
+        _set_bool(self._cdm_only_var,           "cdm_only")
+        _set_bool(self._vaults_only_var,        "vaults_only")
+        _set_bool(self._skip_dl_var,            "skip_dl")
+        _set_bool(self._export_var,             "export")
+        _set_bool(self._list_var,               "list")
+        _set_bool(self._list_titles_var,        "list_titles")
+        _set_bool(self._debug_var,              "debug")
+        _set_bool(self._no_cache_var,           "no_cache")
+        _set_bool(self._reset_cache_var,        "reset_cache")
+        _set_entry(self._proxy_entry,           "proxy")
+        _set_bool(self._no_proxy_var,           "no_proxy")
+        _set_bool(self._remote_var,             "remote")
+        _set_entry(self._server_entry,          "server")
+
+    def _on_close(self) -> None:
+        self._save_settings()
+        self.destroy()
+
     # ─────────────────────────────────────────────────────────────────────────
     # Config helpers
     # ─────────────────────────────────────────────────────────────────────────
@@ -1359,7 +1592,28 @@ class UnshackleGUI(ctk.CTk):
                     self._config_path = candidate
                 except Exception:
                     pass
+                self._refresh_profiles()
                 return
+
+    def _refresh_profiles(self) -> None:
+        """Parse the loaded config YAML for credential profile names."""
+        profiles: list[str] = ["default"]
+        text = self._config_editor.get("1.0", "end")
+        try:
+            import yaml  # type: ignore
+            data = yaml.safe_load(text)
+            if isinstance(data, dict) and isinstance(data.get("credentials"), dict):
+                for service_val in data["credentials"].values():
+                    if isinstance(service_val, dict):
+                        for name in service_val.keys():
+                            if name not in profiles:
+                                profiles.append(str(name))
+        except Exception:
+            pass
+        current = self._profile_combo.get()
+        self._profile_combo.configure(values=profiles)
+        if current not in profiles:
+            self._profile_combo.set("default")
 
     def _load_config(self) -> None:
         path = filedialog.askopenfilename(
@@ -1371,6 +1625,7 @@ class UnshackleGUI(ctk.CTk):
             self._config_editor.delete("1.0", "end")
             self._config_editor.insert("end", p.read_text(encoding="utf-8"))
             self._config_path = p
+            self._refresh_profiles()
 
     def _save_config(self) -> None:
         path = self._config_path
