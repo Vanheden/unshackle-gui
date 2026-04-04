@@ -983,7 +983,8 @@ class UnshackleGUI(ctk.CTk):
         self._console.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
         self._ansi_console  = AnsiWriter(self._console)
         # Both textboxes now exist — build the shared PTY renderer
-        self._pty_renderer  = PtyRenderer(self._inline_console, self._console)
+        self._pty_renderer  = PtyRenderer(self._inline_console, self._console,
+                                          cols=220, rows=200)
 
         bar = ctk.CTkFrame(tab, fg_color="transparent")
         bar.grid(row=1, column=0, sticky="ew")
@@ -1336,22 +1337,24 @@ class UnshackleGUI(ctk.CTk):
         env["COLORTERM"]   = "truecolor"
         # Provide a wide virtual terminal so rich doesn't wrap aggressively.
         env["COLUMNS"] = "200"
-        env["LINES"]   = "50"
+        env["LINES"]   = "200"
 
-        # Snapshot output dir before download so we can rename new files after
-        _do_rename = self._vcodec_plain_var.get()
-        _out_dir   = self._get_output_dir() if _do_rename else None
-        _before    = set(_out_dir.iterdir()) if (_out_dir and _out_dir.is_dir()) else set()
+        # Record start time so we can find files created during this download
+        import time as _time
+        _do_rename  = self._vcodec_plain_var.get()
+        _out_dir    = self._get_output_dir() if _do_rename else None
+        _start_time = _time.time()
 
         if HAS_WINPTY:
             self._run_with_pty(cmd, env)
         else:
             self._run_with_pipe(cmd, env)
 
-        # Post-download: rename codec strings in newly created files
+        # Post-download: rename codec strings in files created after _start_time
+        # Uses rglob so files inside subdirectories are found too
         if _do_rename and _out_dir and _out_dir.is_dir():
-            for f in set(_out_dir.iterdir()) - _before:
-                if f.is_file():
+            for f in _out_dir.rglob("*"):
+                if f.is_file() and f.stat().st_mtime >= _start_time:
                     self._apply_plain_codec_rename(f)
 
     def _run_with_pty(self, cmd: list[str], env: dict[str, str]) -> None:
@@ -1364,7 +1367,7 @@ class UnshackleGUI(ctk.CTk):
                 cmd,
                 cwd=str(Path(__file__).parent),
                 env=env,
-                dimensions=(50, 220),
+                dimensions=(200, 220),
             )
             self._active_pty = pty
             while pty.isalive():
