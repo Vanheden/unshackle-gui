@@ -753,8 +753,8 @@ class UnshackleGUI(ctk.CTk):
                 ctk.CTkCheckBox(r, text=c, variable=v, width=88).pack(side="left")
         r = _row(f)
         self._vcodec_plain_var = ctk.BooleanVar()
-        ctk.CTkCheckBox(r, text="Plain text format  (H264 instead of H.264)",
-                        variable=self._vcodec_plain_var, width=280).pack(side="left")
+        ctk.CTkCheckBox(r, text="Plain text format  (H.264→H264, H.265→H265, VC-1→VC1)",
+                        variable=self._vcodec_plain_var, width=340).pack(side="left")
 
         # ── Audio Codec ───────────────────────────────────────────────────────
         _section(f, "Audio Codec")
