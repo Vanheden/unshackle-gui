@@ -55,6 +55,7 @@ echo.
     --hidden-import customtkinter ^
     --hidden-import pyte ^
     --hidden-import winpty ^
+    --collect-all winpty ^
     --hidden-import PIL ^
     --hidden-import PIL._imagingtk ^
     --noconfirm ^

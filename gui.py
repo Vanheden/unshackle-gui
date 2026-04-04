@@ -464,31 +464,47 @@ def find_unshackle() -> list[str]:
     """Return the command to invoke unshackle in the current Python environment."""
     import shutil
 
-    # 1. Look in PATH first (works when installed via pip/uv)
+    # 1. Look in PATH first (works when running via `uv run python gui.py`)
     found = shutil.which("unshackle")
     if found:
         return [found]
 
-    # 2. Look next to the current executable — works in a normal venv
-    #    but NOT when frozen by PyInstaller (sys.executable == the gui .exe)
+    # 2. Not frozen — look next to the current Python exe (normal venv)
     exe = Path(sys.executable)
-    if not getattr(sys, "frozen", False):          # not a PyInstaller bundle
+    if not getattr(sys, "frozen", False):
         for name in ("unshackle", "unshackle.exe"):
             candidate = exe.parent / name
-            if candidate.exists():
+            if candidate.is_file():
                 return [str(candidate)]
-        # Last resort: run as a Python module
         return [str(exe), "-m", "unshackle"]
 
-    # 3. Frozen (PyInstaller) — try common install locations relative to the .exe
+    # 3. Frozen (PyInstaller) — GUI exe is typically in dist/, project root is
+    #    one level up. Find unshackle.exe directly in the project's .venv.
     gui_dir = exe.parent
-    for rel in (".", "..", "Scripts", "../Scripts"):
-        for name in ("unshackle", "unshackle.exe"):
-            candidate = (gui_dir / rel / name).resolve()
-            if candidate.exists():
-                return [str(candidate)]
+    for project_dir in (gui_dir.parent, gui_dir):
+        for venv_scripts in (
+            project_dir / ".venv" / "Scripts",
+            project_dir / ".venv" / "bin",
+        ):
+            for name in ("unshackle", "unshackle.exe"):
+                candidate = venv_scripts / name
+                if candidate.is_file():
+                    return [str(candidate)]
 
-    # 4. Give up — return the bare name and let the OS resolve it
+    # 4. Fall back to uv run with explicit project directory
+    uv = shutil.which("uv")
+    for uv_candidate in filter(None, [
+        uv,
+        str(Path.home() / ".cargo" / "bin" / "uv.exe"),
+        str(Path(os.environ.get("LOCALAPPDATA", "")) / "uv" / "bin" / "uv.exe"),
+    ]):
+        if Path(uv_candidate).is_file():
+            for project_dir in (gui_dir.parent, gui_dir):
+                if (project_dir / "pyproject.toml").is_file():
+                    return [uv_candidate, "run", "--project", str(project_dir), "unshackle"]
+            return [uv_candidate, "run", "unshackle"]
+
+    # 5. Last resort
     return ["unshackle"]
 
 
@@ -1323,6 +1339,28 @@ class UnshackleGUI(ctk.CTk):
         threading.Thread(target=self._run_command_sync,
                          args=(cmd,), daemon=True).start()
 
+    @staticmethod
+    def _unshackle_cwd(cmd: list[str]) -> str:
+        """Return the working directory for running unshackle.
+
+        If the exe is inside a .venv (e.g. D:\\proj\\.venv\\Scripts\\unshackle.exe),
+        return the project root (3 levels up) so that relative paths in
+        unshackle.yaml (e.g. 'directories.services: unshackle/services') resolve
+        correctly regardless of where the GUI exe lives.
+        """
+        try:
+            exe = Path(cmd[0]).resolve()
+            for i, part in enumerate(exe.parts):
+                if part.lower() == ".venv":
+                    project_root = Path(*exe.parts[:i])
+                    if project_root.is_dir():
+                        return str(project_root)
+        except Exception:
+            pass
+        if getattr(sys, "frozen", False):
+            return str(Path(sys.executable).parent)
+        return str(Path(__file__).parent)
+
     def _run_command_sync(self, cmd: list[str]) -> None:
         self._update_status("● Downloading…", ("#1565c0", "#4da6ff"))
         self._out_queue.put(f"\n$ {' '.join(cmd)}\n{'─' * 60}\n")
@@ -1368,7 +1406,7 @@ class UnshackleGUI(ctk.CTk):
         try:
             pty = _PtyProcess.spawn(
                 cmd,
-                cwd=str(Path(__file__).parent),
+                cwd=self._unshackle_cwd(cmd),
                 env=env,
                 dimensions=(200, 220),
             )
@@ -1384,8 +1422,10 @@ class UnshackleGUI(ctk.CTk):
             # Feed a final status line through the normal text queue so it
             # appears after the PTY renderer hands over control.
             self._out_queue.put(f"\n{'─' * 60}\nFinished — exit code {exit_code}\n")
-            if exit_code == 0:
-                self._update_status(f"✓ Done — exit {exit_code}", ("#2e7d32", "#4caf50"))
+            # 0xC000013A (3221225786) = STATUS_CONTROL_C_EXIT — winpty sends
+            # this when the process exits normally via PTY teardown; treat as success
+            if exit_code in (0, 3221225786):
+                self._update_status("✓ Done", ("#2e7d32", "#4caf50"))
             else:
                 self._update_status(f"✗ Failed — exit {exit_code}", ("#b71c1c", "#ef5350"))
         except Exception as exc:
@@ -1405,7 +1445,7 @@ class UnshackleGUI(ctk.CTk):
                 text=False,
                 bufsize=0,
                 env=env,
-                cwd=str(Path(__file__).parent),
+                cwd=self._unshackle_cwd(cmd),
             )
             self._active_proc = proc
             assert proc.stdout
@@ -1472,11 +1512,51 @@ class UnshackleGUI(ctk.CTk):
         """Return the directory where unshackle writes downloaded files."""
         if out := self._output_entry.get().strip():
             return Path(out)
+
+        root = self._project_root_from_cmd()
+
+        # In a non-frozen process the installed package gives the real config.
+        if not getattr(sys, "frozen", False):
+            try:
+                from unshackle.core.config import config as _cfg  # type: ignore
+                dl = Path(_cfg.directories.downloads)
+                if dl.is_absolute():
+                    return dl
+                return (root / dl) if root else dl
+            except Exception:
+                pass
+
+        # Frozen EXE (or import failed): read unshackle.yaml directly.
+        if root:
+            for cfg_name in ("unshackle.yaml", ".unshackle.yaml"):
+                cfg_path = root / cfg_name
+                if cfg_path.is_file():
+                    try:
+                        import re as _re
+                        text = cfg_path.read_text(encoding="utf-8", errors="ignore")
+                        m = _re.search(r"^\s*downloads:\s*(.+)$", text, _re.MULTILINE)
+                        if m:
+                            dl_val = m.group(1).strip().strip("\"'")
+                            dl = Path(dl_val)
+                            return (root / dl) if not dl.is_absolute() else dl
+                    except Exception:
+                        pass
+            return root / "Downloads"
+        return None
+
+    def _project_root_from_cmd(self) -> "Path | None":
+        """Return the unshackle project root inferred from the exe path."""
         try:
-            from unshackle.core.config import config as _cfg  # type: ignore
-            return Path(_cfg.directories.downloads)
+            cmd = find_unshackle()
+            exe = Path(cmd[0]).resolve()
+            for i, part in enumerate(exe.parts):
+                if part.lower() == ".venv":
+                    root = Path(*exe.parts[:i])
+                    if root.is_dir():
+                        return root
         except Exception:
-            return None
+            pass
+        return None
 
     def _apply_plain_codec_rename(self, path: Path) -> None:
         """Rename codec notation in a file or folder, e.g. H.264 → H264."""

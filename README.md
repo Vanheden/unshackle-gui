@@ -16,6 +16,18 @@ A graphical interface for [Unshackle](https://github.com/unshackle-dl/unshackle)
 - [Unshackle](https://github.com/unshackle-dl/unshackle) installed and available in `PATH`
 - Python 3.10–3.12
 
+### PATH setup (required for the standalone .exe)
+
+The standalone `.exe` locates Unshackle by searching `PATH`. Add Unshackle's virtual-environment Scripts folder to your user PATH:
+
+```
+D:\unshackle\.venv\Scripts
+```
+
+Replace `D:\unshackle` with wherever you installed Unshackle. After adding it, restart Windows (or open a new session) for the change to take effect.
+
+> If you run the GUI from source via `uv run python gui.py`, PATH is set up automatically — no manual step needed.
+
 ## Run from source
 
 ```bash
