@@ -1350,12 +1350,15 @@ class UnshackleGUI(ctk.CTk):
         else:
             self._run_with_pipe(cmd, env)
 
-        # Post-download: rename codec strings in files created after _start_time
-        # Uses rglob so files inside subdirectories are found too
+        # Post-download: rename codec strings in new files AND folders.
+        # Rename deepest paths first so parent renames don't break child paths.
         if _do_rename and _out_dir and _out_dir.is_dir():
-            for f in _out_dir.rglob("*"):
-                if f.is_file() and f.stat().st_mtime >= _start_time:
-                    self._apply_plain_codec_rename(f)
+            candidates = [
+                p for p in _out_dir.rglob("*")
+                if p.stat().st_mtime >= _start_time
+            ]
+            for p in sorted(candidates, key=lambda x: len(x.parts), reverse=True):
+                self._apply_plain_codec_rename(p)
 
     def _run_with_pty(self, cmd: list[str], env: dict[str, str]) -> None:
         """Run via Windows ConPTY — gives rich a real terminal so Live/progress works."""
@@ -1476,14 +1479,15 @@ class UnshackleGUI(ctk.CTk):
             return None
 
     def _apply_plain_codec_rename(self, path: Path) -> None:
-        """Rename codec notation in a file path, e.g. H.264 → H264."""
+        """Rename codec notation in a file or folder, e.g. H.264 → H264."""
         new_name = path.name
         for old, new in self._PLAIN_CODEC_MAP:
             new_name = new_name.replace(old, new)
         if new_name != path.name:
             try:
                 path.rename(path.parent / new_name)
-                self._out_queue.put(f"[Renamed] {path.name}  →  {new_name}\n")
+                kind = "Dir " if path.is_dir() else "File"
+                self._out_queue.put(f"[Renamed {kind}] {path.name}  →  {new_name}\n")
             except Exception as exc:
                 self._out_queue.put(f"[Rename failed] {path.name}: {exc}\n")
 
