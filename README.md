@@ -1,6 +1,6 @@
 # Unshackle GUI
 
-A graphical interface for [Unshackle](https://github.com/unshackle-dl/unshackle) — modular movie, TV, and music archival software.
+A graphical interface for [Unshackle](https://github.com/unshackle-dl/unshackle) — modular movie, TV, and music archival software. This program was purely done with AI just out of curiosity.
 
 ## Features
 
