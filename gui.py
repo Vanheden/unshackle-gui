@@ -624,20 +624,33 @@ class UnshackleGUI(ctk.CTk):
     # ── Download tab ──────────────────────────────────────────────────────────
 
     def _build_download_tab(self) -> None:
+        import tkinter as _tk
         tab = self._tabs.tab("Download")
-        tab.grid_columnconfigure(0, weight=2)
-        tab.grid_columnconfigure(1, weight=3)
+        tab.grid_columnconfigure(0, weight=1)
         tab.grid_rowconfigure(0, weight=1)
 
-        # Left: scrollable form
-        form = ctk.CTkScrollableFrame(tab, label_text="Options")
-        form.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        # Draggable paned window — user can resize left/right panels
+        paned = _tk.PanedWindow(
+            tab, orient="horizontal",
+            sashwidth=6, sashpad=0, sashrelief="flat",
+            bg="#2b2b2b", handlesize=0,
+            opaqueresize=False,
+        )
+        paned.grid(row=0, column=0, sticky="nsew")
+
+        # Left: plain frame wrapper → scrollable form inside
+        left = _tk.Frame(paned, bg="#2b2b2b")
+        paned.add(left, minsize=260, width=390, stretch="never")
+        form = ctk.CTkScrollableFrame(left, label_text="Options")
+        form.pack(fill="both", expand=True)
         form.grid_columnconfigure(0, weight=1)
         self._build_form(form)
 
-        # Right: live console + action bar
-        right = ctk.CTkFrame(tab)
-        right.grid(row=0, column=1, sticky="nsew")
+        # Right: plain frame wrapper → CTK frame inside
+        right_wrap = _tk.Frame(paned, bg="#2b2b2b")
+        paned.add(right_wrap, minsize=200, stretch="always")
+        right = ctk.CTkFrame(right_wrap)
+        right.pack(fill="both", expand=True)
         right.grid_rowconfigure(0, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
@@ -701,13 +714,15 @@ class UnshackleGUI(ctk.CTk):
         # ── Quality ───────────────────────────────────────────────────────────
         _section(f, "Quality")
 
-        r = _row(f)
-        _lbl(r, "Resolution(s)")
         self._quality_vars: dict[str, ctk.BooleanVar] = {}
-        for q in QUALITIES:
+        for i, q in enumerate(QUALITIES):
+            if i % 3 == 0:
+                r = _row(f)
+                _lbl(r, "Resolution(s)" if i == 0 else "")
             v = ctk.BooleanVar()
             self._quality_vars[q] = v
-            ctk.CTkCheckBox(r, text=q, variable=v, width=68).pack(side="left")
+            ctk.CTkCheckBox(r, text=q, variable=v, width=68,
+                            checkbox_width=16, checkbox_height=16).pack(side="left", padx=(0, 2))
 
         r = _row(f)
         _lbl(r, "Video Bitrate (kbps)")
@@ -1009,6 +1024,10 @@ class UnshackleGUI(ctk.CTk):
         # Both textboxes now exist — build the shared PTY renderer
         self._pty_renderer  = PtyRenderer(self._inline_console, self._console,
                                           cols=220, rows=200)
+
+        # Forward keyboard input to the PTY process when active
+        for box in (self._inline_console, self._console):
+            box._textbox.bind("<Key>", self._on_console_key, add=True)
 
         bar = ctk.CTkFrame(tab, fg_color="transparent")
         bar.grid(row=1, column=0, sticky="ew")
@@ -1372,6 +1391,42 @@ class UnshackleGUI(ctk.CTk):
             messagebox.showwarning("Clear Temp", "Some items could not be deleted:\n" + "\n".join(errors))
         else:
             messagebox.showinfo("Clear Temp", f"Temp folder cleared ({len(files)} item(s) deleted).")
+
+    # ANSI escape sequences for special keys
+    _KEY_MAP: dict[str, str] = {
+        "Up":        "\x1b[A",
+        "Down":      "\x1b[B",
+        "Right":     "\x1b[C",
+        "Left":      "\x1b[D",
+        "Prior":     "\x1b[5~",   # Page Up
+        "Next":      "\x1b[6~",   # Page Down
+        "Home":      "\x1b[H",
+        "End":       "\x1b[F",
+        "Return":    "\r",
+        "KP_Enter":  "\r",
+        "BackSpace": "\x7f",
+        "Tab":       "\t",
+        "Escape":    "\x1b",
+        "Delete":    "\x1b[3~",
+        "F1": "\x1bOP", "F2": "\x1bOQ", "F3": "\x1bOR", "F4": "\x1bOS",
+        "F5": "\x1b[15~", "F6": "\x1b[17~", "F7": "\x1b[18~",
+        "F8": "\x1b[19~", "F9": "\x1b[20~", "F10": "\x1b[21~",
+    }
+
+    def _on_console_key(self, event: "tk.Event") -> str:  # type: ignore[name-defined]
+        """Forward key presses to the active PTY process."""
+        if not self._pty_active or self._active_pty is None:
+            return ""  # not active — let normal handling proceed
+        data = self._KEY_MAP.get(event.keysym)
+        if data is None:
+            if event.char and event.char != "\x00":
+                data = event.char
+        if data:
+            try:
+                self._active_pty.write(data)
+            except Exception:
+                pass
+        return "break"  # prevent tkinter from handling the key
 
     def _stop_process(self) -> None:
         stopped = False
