@@ -260,15 +260,22 @@ class AnsiWriter:
 
 # Catppuccin Mocha: maps pyte colour names → hex
 _PYTE_COLORS: dict[str, str] = {
-    "default":        "#cdd6f4",
-    "black":          "#45475a",  "red":            "#f38ba8",
-    "green":          "#a6e3a1",  "yellow":         "#f9e2af",
-    "blue":           "#89b4fa",  "magenta":        "#f5c2e7",
-    "cyan":           "#94e2d5",  "white":          "#cdd6f4",
-    "bright_black":   "#585b70",  "bright_red":     "#f38ba8",
-    "bright_green":   "#a6e3a1",  "bright_yellow":  "#f9e2af",
-    "bright_blue":    "#89b4fa",  "bright_magenta": "#f5c2e7",
-    "bright_cyan":    "#94e2d5",  "bright_white":   "#cdd6f4",
+    "default":       "#cdd6f4",
+    # standard (pyte names, no spaces/underscores for brights)
+    "black":         "#45475a",  "red":           "#f38ba8",
+    "green":         "#a6e3a1",  "yellow":        "#f9e2af",
+    "blue":          "#89b4fa",  "magenta":       "#f5c2e7",
+    "cyan":          "#94e2d5",  "white":         "#cdd6f4",
+    # bright — pyte uses "brightX" (no separator)
+    "brightblack":   "#585b70",  "brightred":     "#f38ba8",
+    "brightgreen":   "#a6e3a1",  "brightyellow":  "#f9e2af",
+    "brightblue":    "#89b4fa",  "brightmagenta": "#f5c2e7",
+    "brightcyan":    "#94e2d5",  "brightwhite":   "#cdd6f4",
+    # underscore variants (older pyte / other sources)
+    "bright_black":  "#585b70",  "bright_red":    "#f38ba8",
+    "bright_green":  "#a6e3a1",  "bright_yellow": "#f9e2af",
+    "bright_blue":   "#89b4fa",  "bright_magenta":"#f5c2e7",
+    "bright_cyan":   "#94e2d5",  "bright_white":  "#cdd6f4",
 }
 
 
@@ -311,6 +318,10 @@ class PtyRenderer:
             return _PYTE_COLORS["default"]
         if name.startswith("#"):
             return name
+        # pyte stores truecolor (SGR 38;2) and 256-color (SGR 38;5) as bare
+        # 6-char hex strings without the leading '#'
+        if len(name) == 6 and all(c in "0123456789abcdefABCDEF" for c in name):
+            return f"#{name}"
         return _PYTE_COLORS.get(name, _PYTE_COLORS["default"])
 
     def _ensure_tag(self, tk: "tk.Text", fg: str, bold: bool) -> str:  # type: ignore[name-defined]
@@ -319,13 +330,17 @@ class PtyRenderer:
         if prebuilt in self._known_tags:
             return prebuilt
 
-        # Truecolor / 256-colour hex tags: create once across ALL textboxes
+        # Normalise bare hex (pyte gives "rrggbb", we want "#rrggbb") so we
+        # never create two separate tags for the same colour.
+        if len(fg) == 6 and all(c in "0123456789abcdefABCDEF" for c in fg):
+            fg = f"#{fg}"
+
         safe = fg.replace("#", "x")
         tag  = f"pt_{safe}_{'B' if bold else 'n'}"
         if tag not in self._known_tags:
             color = self._color_hex(fg)
             font  = ctk.CTkFont(family="Consolas", size=12,
-                                 weight="bold" if bold else "normal")
+                                weight="bold" if bold else "normal")
             for t in self._tks:
                 t.tag_configure(tag, foreground=color, font=font)
             self._known_tags.add(tag)
@@ -1132,7 +1147,6 @@ class UnshackleGUI(ctk.CTk):
             messagebox.showerror("Missing Input", str(e))
             return
         self._run_command(cmd)
-        self._tabs.set("Console")
 
     def _add_to_queue(self) -> None:
         try:
