@@ -46,3 +46,8 @@ Double-click **`build.bat`** — it installs dependencies and produces `dist\uns
 | **Config** | Load, edit and save `unshackle.yaml` |
 
 ## Educational Purpose Only
+
+## License
+
+This software is licensed under the terms of the GNU General Public License, Version 3.0.
+You can find a copy of the license in the [LICENSE](LICENSE) file in the root folder.
