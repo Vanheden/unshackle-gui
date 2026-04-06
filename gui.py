@@ -155,8 +155,8 @@ class AnsiWriter:
 
     def _setup_base_tags(self) -> None:
         tk = self._tk
-        tk.tag_configure("bold",      font=("Consolas", 12, "bold"))
-        tk.tag_configure("italic",    font=("Consolas", 12, "italic"))
+        tk.tag_configure("bold",      font=("Consolas", 13, "bold"))
+        tk.tag_configure("italic",    font=("Consolas", 13, "bold italic"))
         tk.tag_configure("underline", underline=True)
         tk.tag_configure("dim",       foreground="#585b70")
         for code, color in _FG16.items():
@@ -332,8 +332,8 @@ class PtyRenderer:
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _setup_tags(self, tk: "tk.Text") -> None:  # type: ignore[name-defined]
-        normal_font = ctk.CTkFont(family="Consolas", size=12, weight="normal")
-        bold_font   = ctk.CTkFont(family="Consolas", size=12, weight="bold")
+        normal_font = ctk.CTkFont(family="Consolas", size=13, weight="bold")
+        bold_font   = ctk.CTkFont(family="Consolas", size=13, weight="bold")
         for name, color in _PYTE_COLORS.items():
             for bold in (False, True):
                 tag = f"pt_p{name}_{'B' if bold else 'n'}"
@@ -367,8 +367,7 @@ class PtyRenderer:
         tag  = f"pt_{safe}_{'B' if bold else 'n'}"
         if tag not in self._known_tags:
             color = self._color_hex(fg)
-            font  = ctk.CTkFont(family="Consolas", size=12,
-                                weight="bold" if bold else "normal")
+            font  = ctk.CTkFont(family="Consolas", size=13, weight="bold")
             for t in self._tks:
                 t.tag_configure(tag, foreground=color, font=font)
             self._known_tags.add(tag)
@@ -656,7 +655,8 @@ class UnshackleGUI(ctk.CTk):
 
         self._inline_console = ctk.CTkTextbox(
             right, state="disabled",
-            font=ctk.CTkFont(family="Consolas", size=12))
+            font=ctk.CTkFont(family="Consolas", size=13, weight="bold"),
+            spacing2=2)
         self._inline_console.grid(row=0, column=0, sticky="nsew",
                                    padx=8, pady=(8, 4))
         self._ansi_inline = AnsiWriter(self._inline_console)
@@ -1018,7 +1018,8 @@ class UnshackleGUI(ctk.CTk):
 
         self._console = ctk.CTkTextbox(
             tab, state="disabled",
-            font=ctk.CTkFont(family="Consolas", size=12))
+            font=ctk.CTkFont(family="Consolas", size=13, weight="bold"),
+            spacing2=2)
         self._console.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
         self._ansi_console  = AnsiWriter(self._console)
         # Both textboxes now exist — build the shared PTY renderer
