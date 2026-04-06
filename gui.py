@@ -1456,6 +1456,11 @@ class UnshackleGUI(ctk.CTk):
         busy = (HAS_WINPTY and self._active_pty is not None) or \
                (self._active_proc and self._active_proc.poll() is None)
         if busy:
+            # If PTY is active the user may be in an interactive selection prompt —
+            # silently ignore the click instead of showing a confusing dialog.
+            if self._pty_active:
+                self._inline_console._textbox.focus_set()
+                return
             messagebox.showwarning(
                 "Already Running",
                 "A download is already running.\n"
@@ -1487,7 +1492,9 @@ class UnshackleGUI(ctk.CTk):
         return str(Path(__file__).parent)
 
     def _run_command_sync(self, cmd: list[str]) -> None:
-        self._update_status("● Downloading…", ("#1565c0", "#4da6ff"))
+        interactive = self._select_titles_var.get()
+        status_msg = "● Select titles in console — use keyboard" if interactive else "● Downloading…"
+        self._update_status(status_msg, ("#1565c0", "#4da6ff"))
         self._out_queue.put(f"\n$ {' '.join(cmd)}\n{'─' * 60}\n")
 
         env = os.environ.copy()
@@ -1528,6 +1535,8 @@ class UnshackleGUI(ctk.CTk):
         assert self._pty_renderer is not None
         self._pty_active = True
         self._pty_renderer.clear()
+        # Auto-focus the inline console so keyboard input works immediately
+        self.after(0, self._inline_console._textbox.focus_set)
         try:
             pty = _PtyProcess.spawn(
                 cmd,
