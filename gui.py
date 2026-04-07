@@ -949,7 +949,7 @@ class UnshackleGUI(ctk.CTk):
         self._list_var        = ctk.BooleanVar()
         self._list_titles_var = ctk.BooleanVar()
         self._debug_var       = ctk.BooleanVar()
-        _check(r, "List Tracks",  self._list_var,        width=120)
+        _check(r, "List All",     self._list_var,        width=120)
         _check(r, "List Titles",  self._list_titles_var, width=120)
         _check(r, "Debug Mode",   self._debug_var,       width=120)
 
