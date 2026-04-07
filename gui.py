@@ -1108,8 +1108,10 @@ class UnshackleGUI(ctk.CTk):
             cmd += ["--channels", ch]
 
         # ── Color Range ───────────────────────────────────────────────────────
-        ranges = [r for r, v in self._range_vars.items() if v.get()]
-        if ranges and ranges != ["SDR"]:       # SDR is the default; skip if only SDR
+        _range_cli = {"SDR": "sdr", "HLG": "hlg", "HDR10": "hdr10",
+                      "HDR10+": "hdr10p", "DV": "dv", "HYBRID": "hybrid"}
+        ranges = [_range_cli.get(r, r.lower()) for r, v in self._range_vars.items() if v.get()]
+        if ranges and ranges != ["sdr"]:       # sdr is the default; skip if only SDR
             cmd += ["--range", ",".join(ranges)]
 
         # ── Languages ─────────────────────────────────────────────────────────
