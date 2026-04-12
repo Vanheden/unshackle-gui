@@ -1058,7 +1058,7 @@ class UnshackleGUI(ctk.CTk):
         self._ansi_console  = AnsiWriter(self._console)
         # Both textboxes now exist — build the shared PTY renderer
         self._pty_renderer  = PtyRenderer(self._inline_console, self._console,
-                                          cols=220, rows=200)
+                                          cols=220, rows=3000)
 
         # Forward keyboard input to the PTY process when active
         for box in (self._inline_console, self._console):
@@ -1665,7 +1665,7 @@ class UnshackleGUI(ctk.CTk):
                         self._ansi_inline.write(text)
             except queue.Empty:
                 pass
-        self.after(100, self._poll_output)
+        self.after(150, self._poll_output)
 
     def _clear_box(self, writer: "AnsiWriter | PtyRenderer") -> None:
         writer.clear()
