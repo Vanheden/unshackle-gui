@@ -318,7 +318,8 @@ class PtyRenderer:
         self._tks   = [b._textbox for b in boxes]
         self._lock  = threading.Lock()
         self._known_tags: set[str] = set()
-        self._last_history_len: int = -1  # tracks scrollback growth for dirty detection
+        # Per-textbox cache of the last rendered rows — used for incremental updates.
+        self._last_rows: list[list[list[tuple[str, str, bool]]]] = [[] for _ in boxes]
 
         if HAS_PYTE:
             self._screen = _pyte.HistoryScreen(cols, rows, history=2000)
@@ -383,24 +384,31 @@ class PtyRenderer:
         with self._lock:
             self._stream.feed(raw)
 
+    def _write_row(self, tk: "tk.Text", cells: list[tuple[str, str, bool]],  # type: ignore[name-defined]
+                   pos: str) -> None:
+        """Insert a single row's cells at *pos* (Tk index or 'end').
+        Consecutive cells with the same style are merged into one insert call."""
+        i = 0
+        while i < len(cells):
+            char, fg, bold = cells[i]
+            tag  = self._ensure_tag(tk, fg, bold)
+            text = char
+            i += 1
+            while i < len(cells) and cells[i][1] == fg and cells[i][2] == bold:
+                text += cells[i][0]
+                i += 1
+            tk.insert(pos, text, (tag,))
+
     def render(self) -> None:
         """Render pyte screen (+ scrollback history) to all textboxes.
-        Must be called from main thread. Preserves scroll position if the
-        user has scrolled up; auto-scrolls only when already at the bottom."""
+        Uses incremental line-by-line updates so the widget is never blanked —
+        eliminates flicker during long output. Auto-scrolls only when already
+        at the bottom; preserves scroll position otherwise."""
         if self._screen is None:
             return
 
         with self._lock:
             screen = self._screen
-
-            # Skip re-render if pyte reports no cell changes and history hasn't grown.
-            # This eliminates the flicker caused by delete+reinsert when output is static.
-            history_len = len(screen.history.top) if hasattr(screen, "history") else 0
-            has_changes = bool(screen.dirty) or history_len != self._last_history_len
-            if not has_changes:
-                return
-            self._last_history_len = history_len
-            screen.dirty.clear()
 
             def _snapshot_row(row_dict) -> list[tuple[str, str, bool]]:
                 cells: list[tuple[str, str, bool]] = []
@@ -429,39 +437,54 @@ class PtyRenderer:
         if not rows_data:
             return
 
-        # ── write to every textbox ─────────────────────────────────────────────
-        for box, tk in zip(self._boxes, self._tks):
+        # ── incremental update for every textbox ───────────────────────────────
+        for box_idx, (box, tk) in enumerate(zip(self._boxes, self._tks)):
+            last     = self._last_rows[box_idx]
+            new_len  = len(rows_data)
+            old_len  = len(last)
+
+            # Fast path: nothing changed since last render
+            if rows_data == last:
+                continue
+
             at_bottom = tk.yview()[1] >= 0.99
-
             box.configure(state="normal")
-            tk.delete("1.0", "end")
 
-            for row_idx, cells in enumerate(rows_data):
-                if row_idx:
-                    tk.insert("end", "\n")
-                if not cells:
-                    continue
-                i = 0
-                while i < len(cells):
-                    char, fg, bold = cells[i]
-                    tag = self._ensure_tag(tk, fg, bold)
-                    text = char
-                    i += 1
-                    # merge consecutive cells with same style
-                    while i < len(cells) and cells[i][1] == fg and cells[i][2] == bold:
-                        text += cells[i][0]
-                        i += 1
-                    tk.insert("end", text, (tag,))
+            for i, cells in enumerate(rows_data):
+                if i < old_len:
+                    # Row already exists in the widget — skip if unchanged
+                    if cells == last[i]:
+                        continue
+                    # Update in-place: clear line content then re-insert.
+                    # The trailing \n is NOT deleted so the widget never goes blank.
+                    line = i + 1
+                    tk.delete(f"{line}.0", f"{line}.end")
+                    if cells:
+                        tk.mark_set("insert", f"{line}.0")
+                        self._write_row(tk, cells, "insert")
+                else:
+                    # Append new row at the end
+                    if i > 0 or old_len > 0:
+                        tk.insert("end", "\n")
+                    if cells:
+                        self._write_row(tk, cells, "end")
+
+            # Remove any trailing rows that no longer exist
+            if old_len > new_len:
+                tk.delete(f"{new_len}.end", "end")
 
             if at_bottom:
                 tk.see("end")
             box.configure(state="disabled")
 
+            # Store a copy for next-cycle comparison
+            self._last_rows[box_idx] = [row[:] for row in rows_data]
+
     def clear(self) -> None:
         if self._screen is not None:
             with self._lock:
                 self._screen.reset()
-                self._last_history_len = -1
+        self._last_rows = [[] for _ in self._boxes]
         for box, tk in zip(self._boxes, self._tks):
             box.configure(state="normal")
             tk.delete("1.0", "end")
