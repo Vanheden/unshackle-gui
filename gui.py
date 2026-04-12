@@ -447,7 +447,6 @@ class PtyRenderer:
             if rows_data == last:
                 continue
 
-            at_bottom = tk.yview()[1] >= 0.99
             box.configure(state="normal")
 
             for i, cells in enumerate(rows_data):
@@ -476,8 +475,6 @@ class PtyRenderer:
             if old_len > new_len:
                 tk.delete(f"{new_len}.end", "end")
 
-            if at_bottom:
-                tk.see("end")
             box.configure(state="disabled")
 
             # Store a copy for next-cycle comparison
