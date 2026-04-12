@@ -318,6 +318,7 @@ class PtyRenderer:
         self._tks   = [b._textbox for b in boxes]
         self._lock  = threading.Lock()
         self._known_tags: set[str] = set()
+        self._last_history_len: int = -1  # tracks scrollback growth for dirty detection
 
         if HAS_PYTE:
             self._screen = _pyte.HistoryScreen(cols, rows, history=2000)
@@ -392,6 +393,15 @@ class PtyRenderer:
         with self._lock:
             screen = self._screen
 
+            # Skip re-render if pyte reports no cell changes and history hasn't grown.
+            # This eliminates the flicker caused by delete+reinsert when output is static.
+            history_len = len(screen.history.top) if hasattr(screen, "history") else 0
+            has_changes = bool(screen.dirty) or history_len != self._last_history_len
+            if not has_changes:
+                return
+            self._last_history_len = history_len
+            screen.dirty.clear()
+
             def _snapshot_row(row_dict) -> list[tuple[str, str, bool]]:
                 cells: list[tuple[str, str, bool]] = []
                 for c in range(screen.columns):
@@ -451,6 +461,7 @@ class PtyRenderer:
         if self._screen is not None:
             with self._lock:
                 self._screen.reset()
+                self._last_history_len = -1
         for box, tk in zip(self._boxes, self._tks):
             box.configure(state="normal")
             tk.delete("1.0", "end")
