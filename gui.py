@@ -1578,7 +1578,7 @@ class UnshackleGUI(ctk.CTk):
                 cmd,
                 cwd=self._unshackle_cwd(cmd),
                 env=env,
-                dimensions=(200, 220),
+                dimensions=(3000, 220),
             )
             self._active_pty = pty
             while pty.isalive():
