@@ -320,6 +320,9 @@ class PtyRenderer:
         self._known_tags: set[str] = set()
         # Per-textbox cache of the last rendered rows — used for incremental updates.
         self._last_rows: list[list[list[tuple[str, str, bool]]]] = [[] for _ in boxes]
+        # High-water mark for last_row — prevents Rich's ESC[J (erase-to-end)
+        # from shrinking the widget and causing scrollbar bounce.
+        self._max_last_row: int = -1
 
         if HAS_PYTE:
             self._screen = _pyte.HistoryScreen(cols, rows, history=2000)
@@ -431,6 +434,13 @@ class PtyRenderer:
             for r in range(screen.lines):
                 if any(c.data.strip() for c in screen.buffer[r].values()):
                     last_row = r
+            # Never let last_row shrink — Rich sends ESC[J (erase-to-end) before
+            # each redraw, which temporarily clears all rows below the cursor and
+            # would cause the widget to shrink then grow every render cycle.
+            if last_row < self._max_last_row:
+                last_row = self._max_last_row
+            else:
+                self._max_last_row = last_row
             for r in range(last_row + 1):
                 rows_data.append(_snapshot_row(screen.buffer[r]))
 
@@ -485,6 +495,7 @@ class PtyRenderer:
             with self._lock:
                 self._screen.reset()
         self._last_rows = [[] for _ in self._boxes]
+        self._max_last_row = -1
         for box, tk in zip(self._boxes, self._tks):
             box.configure(state="normal")
             tk.delete("1.0", "end")
