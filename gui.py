@@ -460,8 +460,11 @@ class PtyRenderer:
                     line = i + 1
                     tk.delete(f"{line}.0", f"{line}.end")
                     if cells:
-                        tk.mark_set("insert", f"{line}.0")
-                        self._write_row(tk, cells, "insert")
+                        # Use a private mark (not "insert") so Tk doesn't
+                        # auto-scroll to make the cursor visible on each update.
+                        tk.mark_set("_pty_cur", f"{line}.0")
+                        tk.mark_gravity("_pty_cur", "right")
+                        self._write_row(tk, cells, "_pty_cur")
                 else:
                     # Append new row at the end
                     if i > 0 or old_len > 0:
