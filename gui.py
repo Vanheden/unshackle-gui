@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -323,6 +324,10 @@ class PtyRenderer:
         # High-water mark for last_row — prevents Rich's ESC[J (erase-to-end)
         # from shrinking the widget and causing scrollbar bounce.
         self._max_last_row: int = -1
+        # Feed-time tracking — skip render if data arrived <40ms ago so we
+        # never render mid-frame (ESC[J cleared but new content not yet fed).
+        self._last_feed_time: float = 0.0
+        self._last_render_time: float = 0.0
 
         if HAS_PYTE:
             self._screen = _pyte.HistoryScreen(cols, rows, history=2000)
@@ -386,6 +391,7 @@ class PtyRenderer:
         raw = data.encode("utf-8", errors="replace") if isinstance(data, str) else data
         with self._lock:
             self._stream.feed(raw)
+        self._last_feed_time = time.monotonic()
 
     def _write_row(self, tk: "tk.Text", cells: list[tuple[str, str, bool]],  # type: ignore[name-defined]
                    pos: str) -> None:
@@ -407,6 +413,16 @@ class PtyRenderer:
         Uses incremental line-by-line updates so the widget is never blanked —
         eliminates flicker during long output. Auto-scrolls only when already
         at the bottom; preserves scroll position otherwise."""
+        now = time.monotonic()
+        since_feed   = now - self._last_feed_time
+        since_render = now - self._last_render_time
+        # Wait for 40ms of silence after the last feed so we never render
+        # mid-frame (e.g. after ESC[J but before the new content arrives).
+        # Force a render anyway after 300ms so continuous output isn't frozen.
+        if since_feed < 0.04 and since_render < 0.30:
+            return
+        self._last_render_time = now
+
         if self._screen is None:
             return
 
