@@ -1108,6 +1108,9 @@ class UnshackleGUI(ctk.CTk):
         self._config_editor = ctk.CTkTextbox(
             tab, font=ctk.CTkFont(family="Consolas", size=12))
         self._config_editor.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+        self._setup_yaml_tags()
+        self._yaml_hl_job: str | None = None
+        self._config_editor._textbox.bind("<KeyRelease>", self._schedule_yaml_highlight)
 
         bar = ctk.CTkFrame(tab, fg_color="transparent")
         bar.grid(row=1, column=0, sticky="ew")
@@ -1117,6 +1120,55 @@ class UnshackleGUI(ctk.CTk):
                       command=self._save_config).pack(side="left")
 
         self._try_autoload_config()
+
+    def _setup_yaml_tags(self) -> None:
+        tk = self._config_editor._textbox
+        fn = ctk.CTkFont(family="Consolas", size=12)
+        fb = ctk.CTkFont(family="Consolas", size=12, weight="bold")
+        tk.tag_configure("yk", foreground="#9cdcfe", font=fb)  # key
+        tk.tag_configure("yq", foreground="#ce9178", font=fn)  # quoted string
+        tk.tag_configure("yc", foreground="#6a9955", font=fn)  # comment
+        tk.tag_configure("yb", foreground="#569cd6", font=fn)  # bool / null
+        tk.tag_configure("yn", foreground="#b5cea8", font=fn)  # number
+        tk.tag_configure("ys", foreground="#c586c0", font=fb)  # --- / list -
+
+    def _highlight_yaml(self) -> None:
+        tk = self._config_editor._textbox
+        for tag in ("yk", "yq", "yc", "yb", "yn", "ys"):
+            tk.tag_remove(tag, "1.0", "end")
+        content = tk.get("1.0", "end-1c")
+        for ln, line in enumerate(content.split("\n"), start=1):
+            # --- separator
+            if re.match(r"^\s*---\s*$", line):
+                tk.tag_add("ys", f"{ln}.0", f"{ln}.end")
+                continue
+            # strip comment portion first
+            cm = re.search(r"(?<!['\"])#.*$", line)
+            if cm:
+                tk.tag_add("yc", f"{ln}.{cm.start()}", f"{ln}.{cm.end()}")
+                line = line[:cm.start()]
+            # key before colon
+            km = re.match(r"^(\s*)([\w./-]+)\s*:", line)
+            if km:
+                tk.tag_add("yk", f"{ln}.{km.start(2)}", f"{ln}.{km.end(2)}")
+            # list marker -
+            lm = re.match(r"^(\s*)(-)\s", line)
+            if lm:
+                tk.tag_add("ys", f"{ln}.{lm.start(2)}", f"{ln}.{lm.end(2)}")
+            # quoted strings
+            for m in re.finditer(r'"[^"]*"|\'[^\']*\'', line):
+                tk.tag_add("yq", f"{ln}.{m.start()}", f"{ln}.{m.end()}")
+            # booleans / null
+            for m in re.finditer(r"\b(true|false|null|yes|no|on|off)\b", line, re.I):
+                tk.tag_add("yb", f"{ln}.{m.start()}", f"{ln}.{m.end()}")
+            # numbers
+            for m in re.finditer(r"(?<!\w)[-]?\d+(\.\d+)?(?!\w)", line):
+                tk.tag_add("yn", f"{ln}.{m.start()}", f"{ln}.{m.end()}")
+
+    def _schedule_yaml_highlight(self, _event=None) -> None:
+        if self._yaml_hl_job:
+            self.after_cancel(self._yaml_hl_job)
+        self._yaml_hl_job = self.after(200, self._highlight_yaml)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Command builder
@@ -1977,6 +2029,7 @@ class UnshackleGUI(ctk.CTk):
                     self._config_editor.insert(
                         "end", candidate.read_text(encoding="utf-8"))
                     self._config_path = candidate
+                    self._highlight_yaml()
                 except Exception:
                     pass
                 self._refresh_profiles()
@@ -2013,6 +2066,7 @@ class UnshackleGUI(ctk.CTk):
             self._config_editor.insert("end", p.read_text(encoding="utf-8"))
             self._config_path = p
             self._refresh_profiles()
+            self._highlight_yaml()
 
     def _save_config(self) -> None:
         path = self._config_path
