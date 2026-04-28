@@ -58,6 +58,7 @@ echo.
     --collect-all winpty ^
     --hidden-import PIL ^
     --hidden-import PIL._imagingtk ^
+    --hidden-import ctypes ^
     --noconfirm ^
     gui.py
 

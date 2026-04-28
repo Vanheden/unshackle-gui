@@ -2,6 +2,7 @@
 """Unshackle GUI — Graphical interface for the Unshackle download tool."""
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import queue
@@ -111,6 +112,22 @@ AUDIO_CODECS = ["AAC", "DD", "DD+", "FLAC", "DTS", "OPUS", "ALAC"]
 COLOR_RANGES = ["SDR", "HLG", "HDR10", "HDR10+", "DV", "HYBRID"]
 QUALITIES    = ["2160p", "1080p", "720p", "480p", "360p", "240p"]
 SUB_FORMATS  = ["", "SRT", "ASS", "TTML", "VTT", "STPP", "WVTT"]
+
+URL_SERVICE_MAP: dict[str, str] = {
+    "netflix": "NF", "disneyplus": "DSNP", "disney-plus": "DSNP",
+    "amazon": "AMZN", "primevideo": "AMZN",
+    "crunchyroll": "CR", "hbomax": "HMAX", "max.com": "HMAX",
+    "hulu": "HULUJP", "appletv": "ATV", "tv.apple": "ATV",
+    "paramountplus": "PMTP", "paramount": "PMTP",
+    "mubi": "MUBI", "viki": "VIKI", "abema": "ABMA",
+    "dazn": "ADN", "exxen": "EXXEN", "globoplay": "GLBO",
+    "hotstar": "HIDI", "discoveryplus": "DSMART",
+    "u-next": "UNXT", "unext": "UNXT",
+    "iq.com": "iQ", "iqiyi": "iQ",
+    "vod": "VIDO", "npo": "NPO", "kocowa": "KCW",
+    "mnet": "KNPY", "skyticket": "SKST", "svt": "SVTP",
+    "tod": "TOD", "uplay": "UPLAY", "vtm": "VRT",
+}
 
 # ── pyte VT100 renderer ───────────────────────────────────────────────────────
 try:
@@ -648,6 +665,185 @@ class UnshackleGUI(ctk.CTk):
         self._poll_output()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._load_settings()
+        self._setup_shortcuts()
+
+    def _setup_shortcuts(self) -> None:
+        self.bind("<Control-Return>", lambda e: self._download_now())
+        self.bind("<Control-q>", lambda e: self._add_to_queue())
+        self.bind("<Control-Shift-Q>", lambda e: self._run_queue())
+        self.bind("<Control-p>", lambda e: self._preview_command())
+        self.bind("<Escape>", lambda e: self._stop_process())
+        self.bind("<Control-l>", lambda e: self._toggle_console_search())
+        self.bind("<Control-s>", lambda e: self._save_log())
+
+    def _reset_form(self) -> None:
+        self._service_var.set(SERVICES[0] if SERVICES else "NF")
+        self._title_entry.delete(0, "end")
+        self._profile_combo.set("default")
+        for v in self._quality_vars.values():
+            v.set(False)
+        for v in self._vcodec_vars.values():
+            v.set(False)
+        for v in self._acodec_vars.values():
+            v.set(False)
+        self._range_vars["SDR"].set(True)
+        for k, v in self._range_vars.items():
+            if k != "SDR":
+                v.set(False)
+        self._vcodec_plain_var.set(False)
+        for entry in (self._vbitrate_entry, self._abitrate_entry,
+                      self._vbitrate_range_entry, self._abitrate_range_entry,
+                      self._channels_entry, self._lang_entry, self._alang_entry,
+                      self._vlang_entry, self._wanted_entry, self._tag_entry,
+                      self._tmdb_entry, self._imdb_entry, self._animeapi_entry,
+                      self._output_entry, self._downloads_entry, self._workers_entry,
+                      self._slow_entry, self._proxy_entry, self._server_entry):
+            entry.delete(0, "end")
+        self._slang_entry.delete(0, "end")
+        self._slang_entry.insert(0, "all")
+        self._require_subs_entry.delete(0, "end")
+        self._sub_format_combo.set(SUB_FORMATS[0] if SUB_FORMATS else "")
+        for var in (self._forced_subs_var, self._exact_lang_var,
+                    self._latest_ep_var, self._select_titles_var,
+                    self._video_only_var, self._audio_only_var,
+                    self._subs_only_var, self._chapters_only_var,
+                    self._no_video_var, self._no_audio_var,
+                    self._no_subs_var, self._no_chapters_var,
+                    self._audio_desc_var, self._no_atmos_var,
+                    self._split_audio_var, self._no_mux_var,
+                    self._no_folder_var, self._no_source_var,
+                    self._worst_var, self._best_available_var,
+                    self._cdm_only_var, self._vaults_only_var,
+                    self._skip_dl_var, self._export_var,
+                    self._repack_var, self._enrich_var,
+                    self._list_var, self._list_titles_var,
+                    self._debug_var, self._no_cache_var,
+                    self._reset_cache_var, self._no_proxy_var,
+                    self._remote_var):
+            var.set(False)
+
+    def _detect_service_from_url(self, url: str) -> str | None:
+        lower = url.lower()
+        for domain, svc in URL_SERVICE_MAP.items():
+            if domain in lower:
+                return svc
+        return None
+
+    def _on_title_changed(self, *args) -> None:
+        title = self._title_entry.get().strip()
+        if not title:
+            return
+        detected = self._detect_service_from_url(title)
+        if detected and detected in SERVICES:
+            current = self._service_var.get()
+            if detected != current:
+                self._service_var.set(detected)
+
+    def _paste_and_detect_url(self) -> None:
+        dialog = ctk.CTkInputDialog(
+            text="Paste the URL or Title ID:",
+            title="Paste URL",
+        )
+        url = dialog.get_input()
+        if url and url.strip():
+            self._title_entry.delete(0, "end")
+            self._title_entry.insert(0, url.strip())
+            self._on_title_changed()
+
+    def _notify_done(self, success: bool) -> None:
+        self.bell()
+        try:
+            ctypes.windll.user32.FlashWindow(int(self.winfo_id()), True)
+        except Exception:
+            pass
+        orig_title = self.title()
+        suffix = " ✓ Done" if success else " ✗ Failed"
+        if not orig_title.endswith(suffix):
+            self.title(f"{orig_title}{suffix}")
+            self.after(5000, lambda: self.title(orig_title))
+
+    def _save_log(self) -> None:
+        path = filedialog.asksaveasfilename(
+            title="Save Console Log",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            text = self._console.get("1.0", "end-1c")
+            Path(path).write_text(text, encoding="utf-8")
+            messagebox.showinfo("Saved", f"Log saved to:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Error", f"Could not save log:\n{exc}")
+
+    def _toggle_console_search(self) -> None:
+        if not hasattr(self, "_search_frame"):
+            self._setup_console_search()
+        if self._search_visible:
+            self._search_frame.grid_remove()
+            self._search_visible = False
+            self._console.focus_set()
+        else:
+            self._search_frame.grid()
+            self._search_visible = True
+            self._search_entry.focus_set()
+
+    def _setup_console_search(self) -> None:
+        tab = self._tabs.tab("Console")
+        self._search_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        self._search_frame.grid(row=0, column=0, sticky="new", padx=8, pady=(4, 0))
+        self._search_frame.grid_remove()
+        self._search_visible = False
+        self._search_last: str = ""
+        inner = ctk.CTkFrame(self._search_frame, fg_color=("gray85", "gray17"),
+                             corner_radius=6)
+        inner.pack(fill="x", pady=2)
+        ctk.CTkLabel(inner, text="Find:", width=40).pack(side="left", padx=(6, 2))
+        self._search_entry = ctk.CTkEntry(inner, width=280,
+                                           placeholder_text="Search console…")
+        self._search_entry.pack(side="left", padx=(0, 6))
+        self._search_entry.bind("<Return>", self._do_console_search)
+        ctk.CTkButton(inner, text="Find", width=60,
+                      command=self._do_console_search).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(inner, text="✕", width=28,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._toggle_console_search).pack(side="left")
+        self._console.grid(row=1, column=0, sticky="nsew", pady=(0, 6))
+
+    def _do_console_search(self, event=None) -> None:
+        term = self._search_entry.get().strip()
+        if not term:
+            return
+        tk = self._console._textbox
+        if term != self._search_last:
+            self._search_last = term
+            tk.tag_remove("highlight", "1.0", "end")
+            start = "1.0"
+            while True:
+                pos = tk.search(term, start, "end", nocase=True)
+                if not pos:
+                    break
+                end = f"{pos}+{len(term)}c"
+                tk.tag_configure("highlight", background="#ffd600",
+                                 foreground="#000000")
+                tk.tag_add("highlight", pos, end)
+                start = end
+        cur = tk.index("insert")
+        pos = tk.search(term, cur, "end", nocase=True)
+        if not pos:
+            pos = tk.search(term, "1.0", "end", nocase=True)
+        if pos:
+            tk.mark_set("insert", pos)
+            tk.see(pos)
+
+    def _move_queue_item(self, index: int, direction: int) -> None:
+        with self._queue_lock:
+            new_idx = index + direction
+            if 0 <= new_idx < len(self._dl_queue):
+                self._dl_queue[index], self._dl_queue[new_idx] = \
+                    self._dl_queue[new_idx], self._dl_queue[index]
+        self._refresh_queue_ui()
 
     # ─────────────────────────────────────────────────────────────────────────
     # UI construction
@@ -745,6 +941,12 @@ class UnshackleGUI(ctk.CTk):
         ctk.CTkButton(bar, text="■  Stop", width=80,
                       fg_color="#7a1010", hover_color="#9a1515",
                       command=self._stop_process).pack(side="right")
+        ctk.CTkButton(bar, text="📋 Paste URL", width=110,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._paste_and_detect_url).pack(side="right", padx=(0, 6))
+        ctk.CTkButton(bar, text="↺  Reset", width=80,
+                      fg_color="#5a3a3a", hover_color="#7a4a4a",
+                      command=self._reset_form).pack(side="right", padx=(0, 6))
 
     # ── Form (all dl options) ─────────────────────────────────────────────────
 
@@ -763,6 +965,7 @@ class UnshackleGUI(ctk.CTk):
         _lbl(r, "Title / URL")
         self._title_entry = _entry(r, width=310,
                                     placeholder="URL, title ID, or search query")
+        self._title_entry.bind("<KeyRelease>", self._on_title_changed)
 
         r = _row(f)
         _lbl(r, "Profile")
@@ -1074,14 +1277,14 @@ class UnshackleGUI(ctk.CTk):
 
     def _build_console_tab(self) -> None:
         tab = self._tabs.tab("Console")
-        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_rowconfigure(1, weight=1)
         tab.grid_columnconfigure(0, weight=1)
 
         self._console = ctk.CTkTextbox(
             tab, state="disabled",
             font=ctk.CTkFont(family="Consolas", size=13, weight="bold"),
             spacing2=2)
-        self._console.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+        self._console.grid(row=1, column=0, sticky="nsew", pady=(0, 6))
         self._ansi_console  = AnsiWriter(self._console)
         # Both textboxes now exist — build the shared PTY renderer
         self._pty_renderer  = PtyRenderer(self._inline_console, self._console,
@@ -1092,11 +1295,17 @@ class UnshackleGUI(ctk.CTk):
             box._textbox.bind("<Key>", self._on_console_key, add=True)
 
         bar = ctk.CTkFrame(tab, fg_color="transparent")
-        bar.grid(row=1, column=0, sticky="ew")
+        bar.grid(row=2, column=0, sticky="ew")
         ctk.CTkButton(bar, text="🗑  Clear Console", width=140,
                       fg_color="#3a3a3a", hover_color="#4a4a4a",
                       command=lambda: self._clear_box(self._ansi_console)
-                      ).pack(side="left")
+                      ).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bar, text="💾  Save Log", width=110,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._save_log).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bar, text="🔍  Find (Ctrl+L)", width=140,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._toggle_console_search).pack(side="left")
 
     # ── Config tab ────────────────────────────────────────────────────────────
 
@@ -1367,12 +1576,26 @@ class UnshackleGUI(ctk.CTk):
             return
         win = ctk.CTkToplevel(self)
         win.title("Command Preview")
-        win.geometry("860x130")
+        win.geometry("860x150")
         win.resizable(True, False)
         tb = ctk.CTkTextbox(win, font=ctk.CTkFont(family="Consolas", size=12))
-        tb.pack(fill="both", expand=True, padx=10, pady=10)
+        tb.pack(fill="both", expand=True, padx=10, pady=(10, 4))
         tb.insert("end", " ".join(cmd))
         tb.configure(state="disabled")
+        btn_bar = ctk.CTkFrame(win, fg_color="transparent")
+        btn_bar.pack(fill="x", padx=10, pady=(0, 10))
+
+        def _copy_cmd():
+            self.clipboard_clear()
+            self.clipboard_append(" ".join(cmd))
+            copy_btn.configure(text="Copied!", fg_color="#2e7d32")
+
+        copy_btn = ctk.CTkButton(btn_bar, text="📋  Copy to Clipboard", width=180,
+                                 command=_copy_cmd)
+        copy_btn.pack(side="left")
+        ctk.CTkButton(btn_bar, text="Close", width=80,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=win.destroy).pack(side="left", padx=(10, 0))
 
     def _run_queue(self) -> None:
         with self._queue_lock:
@@ -1435,7 +1658,19 @@ class UnshackleGUI(ctk.CTk):
                     row, text="✕", width=28, height=24,
                     fg_color="#444", hover_color="#666",
                     command=lambda idx=i: self._remove_queue_item(idx),
-                ).grid(row=0, column=3, padx=(0, 4))
+                ).grid(row=0, column=4, padx=(0, 4))
+                btn_frame = ctk.CTkFrame(row, fg_color="transparent", width=50)
+                btn_frame.grid(row=0, column=5, padx=(0, 4))
+                ctk.CTkButton(
+                    btn_frame, text="▲", width=24, height=20,
+                    fg_color="#3a3a3a", hover_color="#4a4a4a",
+                    command=lambda idx=i: self._move_queue_item(idx, -1),
+                ).pack(side="left", padx=0)
+                ctk.CTkButton(
+                    btn_frame, text="▼", width=24, height=20,
+                    fg_color="#3a3a3a", hover_color="#4a4a4a",
+                    command=lambda idx=i: self._move_queue_item(idx, 1),
+                ).pack(side="left", padx=0)
 
                 self._queue_rows.append(row)
 
@@ -1675,8 +1910,10 @@ class UnshackleGUI(ctk.CTk):
             # this when the process exits normally via PTY teardown; treat as success
             if exit_code in (0, 3221225786):
                 self._update_status("✓ Done", ("#2e7d32", "#4caf50"))
+                self._notify_done(success=True)
             else:
                 self._update_status(f"✗ Failed — exit {exit_code}", ("#b71c1c", "#ef5350"))
+                self._notify_done(success=False)
         except Exception as exc:
             self._out_queue.put(f"PTY error: {exc}\n")
             self._update_status("✗ PTY error", ("#b71c1c", "#ef5350"))
@@ -1715,8 +1952,10 @@ class UnshackleGUI(ctk.CTk):
             self._out_queue.put(f"\n{'─' * 60}\nFinished — exit code {rc}\n")
             if rc == 0:
                 self._update_status(f"✓ Done — exit {rc}", ("#2e7d32", "#4caf50"))
+                self._notify_done(success=True)
             else:
                 self._update_status(f"✗ Failed — exit {rc}", ("#b71c1c", "#ef5350"))
+                self._notify_done(success=False)
         except FileNotFoundError:
             self._out_queue.put(
                 "ERROR: 'unshackle' was not found.\n"
