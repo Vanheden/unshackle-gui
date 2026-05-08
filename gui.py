@@ -11,6 +11,8 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
+from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -652,10 +654,17 @@ class UnshackleGUI(ctk.CTk):
         self._pty_active   = False          # True while PTY process is running
         self._queue_rows: list[ctk.CTkFrame] = []
         self._config_path: Path | None = None
+        self._progress_pct: float | None = None
         if getattr(sys, "frozen", False):
             self._settings_path = Path(sys.executable).parent / "gui_settings.json"
+            self._presets_path   = Path(sys.executable).parent / "gui_presets.json"
+            self._history_path   = Path(sys.executable).parent / "gui_history.json"
         else:
             self._settings_path = Path(__file__).resolve().parent / "gui_settings.json"
+            self._presets_path   = Path(__file__).resolve().parent / "gui_presets.json"
+            self._history_path   = Path(__file__).resolve().parent / "gui_history.json"
+        self._presets: dict[str, dict] = self._load_presets_file()
+        self._history: list[dict] = self._load_history_file()
         # Created after UI is built (textboxes must exist first)
         self._pty_renderer: PtyRenderer | None = None
         self._ansi_inline:  AnsiWriter  | None = None
@@ -675,6 +684,160 @@ class UnshackleGUI(ctk.CTk):
         self.bind("<Escape>", lambda e: self._stop_process())
         self.bind("<Control-l>", lambda e: self._toggle_console_search())
         self.bind("<Control-s>", lambda e: self._save_log())
+        self.bind("<Control-t>", lambda e: self._toggle_theme())
+
+    def _toggle_theme(self) -> None:
+        current = ctk.get_appearance_mode()
+        new_mode = "Light" if current == "Dark" else "Dark"
+        ctk.set_appearance_mode(new_mode)
+        self._theme_var.set(new_mode)
+
+    def _open_downloads_folder(self) -> None:
+        dl_dir = self._get_output_dir()
+        if dl_dir and dl_dir.is_dir():
+            webbrowser.open(str(dl_dir))
+        else:
+            root = self._project_root_from_cmd()
+            if root and (root / "Downloads").is_dir():
+                webbrowser.open(str(root / "Downloads"))
+            else:
+                messagebox.showinfo("Open Downloads", "Downloads folder not found.")
+
+    def _preset_save(self) -> None:
+        name = self._preset_combo.get().strip()
+        if not name or name == "(none)":
+            name = ctk.CTkInputDialog(text="Preset name:", title="Save Preset").get_input()
+            if not name or not name.strip():
+                return
+            name = name.strip()
+        self._presets[name] = self._settings_get()
+        self._save_presets_file()
+        self._refresh_preset_combo()
+        self._preset_combo.set(name)
+        messagebox.showinfo("Preset Saved", f"Preset '{name}' saved.")
+
+    def _preset_load(self) -> None:
+        name = self._preset_combo.get().strip()
+        if not name or name == "(none)":
+            return
+        if name not in self._presets:
+            messagebox.showwarning("Preset", f"Preset '{name}' not found.")
+            return
+        self._apply_settings_dict(self._presets[name])
+        messagebox.showinfo("Preset Loaded", f"Preset '{name}' loaded.")
+
+    def _preset_delete(self) -> None:
+        name = self._preset_combo.get().strip()
+        if not name or name == "(none)":
+            return
+        if name in self._presets:
+            del self._presets[name]
+            self._save_presets_file()
+            self._refresh_preset_combo()
+            self._preset_combo.set("(none)")
+
+    def _refresh_preset_combo(self) -> None:
+        names = sorted(self._presets.keys()) if self._presets else ["(none)"]
+        self._preset_combo.configure(values=names)
+        if not self._presets:
+            self._preset_combo.set("(none)")
+
+    def _load_presets_file(self) -> dict[str, dict]:
+        if self._presets_path.exists():
+            try:
+                return json.loads(self._presets_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    def _save_presets_file(self) -> None:
+        try:
+            self._presets_path.write_text(
+                json.dumps(self._presets, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_history_file(self) -> list[dict]:
+        if self._history_path.exists():
+            try:
+                return json.loads(self._history_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return []
+
+    def _save_history_file(self) -> None:
+        try:
+            self._history_path.write_text(
+                json.dumps(self._history[-200:], indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _add_history_entry(self, service: str, title: str, status: str, exit_code: str) -> None:
+        self._history.append({
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "service": service,
+            "title": title,
+            "status": status,
+            "exit_code": exit_code,
+        })
+        self._history = self._history[-200:]
+        self._save_history_file()
+
+    def _refresh_history_ui(self) -> None:
+        if not hasattr(self, "_history_text"):
+            return
+        self._history_text.configure(state="normal")
+        self._history_text.delete("1.0", "end")
+        for entry in reversed(self._history):
+            icon = {"Done": "...", "Failed": "X"}.get(entry.get("status", ""), "-")
+            line = f'{entry.get("time", "?")}  {icon}  [{entry.get("service", "?")}] {entry.get("title", "?")}  (exit {entry.get("exit_code", "?")})\n'
+            self._history_text.insert("end", line)
+        self._history_text.configure(state="disabled")
+
+    def _clear_history(self) -> None:
+        if messagebox.askyesno("Clear History", "Delete all download history?"):
+            self._history = []
+            self._save_history_file()
+            self._refresh_history_ui()
+
+    def _batch_add_urls(self) -> None:
+        win = ctk.CTkToplevel(self)
+        win.title("Batch Add URLs")
+        win.geometry("700x400")
+        win.transient(self)
+        win.grab_set()
+        ctk.CTkLabel(win, text="Paste one URL per line:", anchor="w").pack(
+            fill="x", padx=10, pady=(10, 4))
+        text_box = ctk.CTkTextbox(win, height=250)
+        text_box.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+        def _do_add() -> None:
+            raw = text_box.get("1.0", "end").strip()
+            if not raw:
+                win.destroy()
+                return
+            added = 0
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                svc = self._detect_service_from_url(line)
+                service = svc if svc else self._service_var.get()
+                cmd = find_unshackle() + ["dl", service, line]
+                label = f"{service} - {line[:70]}"
+                item = QueueItem(cmd, label)
+                with self._queue_lock:
+                    self._dl_queue.append(item)
+                added += 1
+            self._refresh_queue_ui()
+            self._ansi_inline.write(f"[Batch] Added {added} item(s) to queue.\n")
+            win.destroy()
+
+        btn_bar = ctk.CTkFrame(win, fg_color="transparent")
+        btn_bar.pack(fill="x", padx=10, pady=(0, 10))
+        ctk.CTkButton(btn_bar, text="Add All to Queue", command=_do_add).pack(side="left")
+        ctk.CTkButton(btn_bar, text="Cancel", fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=win.destroy).pack(side="left", padx=(10, 0))
 
     def _reset_form(self) -> None:
         self._service_var.set(SERVICES[0] if SERVICES else "NF")
@@ -857,15 +1020,18 @@ class UnshackleGUI(ctk.CTk):
         self._tabs = ctk.CTkTabview(self, anchor="nw")
         self._tabs.grid(row=0, column=0, sticky="nsew", padx=10, pady=(10, 0))
 
-        for name in ("Download", "Queue", "Console", "Config"):
+        for name in ("Download", "Queue", "Console", "Config", "History"):
             self._tabs.add(name)
+
+        self._theme_var = ctk.StringVar(value=ctk.get_appearance_mode())
 
         self._build_download_tab()
         self._build_queue_tab()
         self._build_console_tab()
         self._build_config_tab()
+        self._build_history_tab()
 
-        # ── Status bar ────────────────────────────────────────────────────────
+        # ── Status bar with progress ─────────────────────────────────────────
         status_bar = ctk.CTkFrame(self, height=28, fg_color=("gray85", "gray17"))
         status_bar.grid(row=1, column=0, sticky="ew", padx=10, pady=(3, 8))
         status_bar.grid_propagate(False)
@@ -876,6 +1042,13 @@ class UnshackleGUI(ctk.CTk):
             anchor="w",
         )
         self._status_label.pack(side="left", padx=10, pady=4)
+        self._progress_bar = ctk.CTkProgressBar(status_bar, width=200, height=14)
+        self._progress_bar.pack(side="right", padx=10, pady=4)
+        self._progress_bar.set(0)
+        self._progress_pct_label = ctk.CTkLabel(
+            status_bar, text="", width=50,
+            font=ctk.CTkFont(size=11), anchor="e")
+        self._progress_pct_label.pack(side="right", padx=(0, 4))
 
     # ── Download tab ──────────────────────────────────────────────────────────
 
@@ -947,6 +1120,15 @@ class UnshackleGUI(ctk.CTk):
         ctk.CTkButton(bar, text="↺  Reset", width=80,
                       fg_color="#5a3a3a", hover_color="#7a4a4a",
                       command=self._reset_form).pack(side="right", padx=(0, 6))
+        ctk.CTkButton(bar, text="📂 Open Downloads", width=145,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._open_downloads_folder).pack(side="right", padx=(0, 6))
+        ctk.CTkButton(bar, text="🔤 Theme", width=80,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._toggle_theme).pack(side="right", padx=(0, 6))
+        ctk.CTkButton(bar, text="📑 Batch URLs", width=110,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._batch_add_urls).pack(side="right", padx=(0, 6))
 
     # ── Form (all dl options) ─────────────────────────────────────────────────
 
@@ -974,6 +1156,21 @@ class UnshackleGUI(ctk.CTk):
         ctk.CTkButton(r, text="↺", width=32, height=28,
                       fg_color="#3a3a3a", hover_color="#4a4a4a",
                       command=self._refresh_profiles).pack(side="left")
+
+        # ── Presets ────────────────────────────────────────────────────────────
+        _section(f, "Presets")
+        r = _row(f)
+        self._preset_combo = ctk.CTkComboBox(
+            r, values=["(none)"] if not self._presets else sorted(self._presets),
+            width=180)
+        self._preset_combo.pack(side="left", padx=(0, 4))
+        ctk.CTkButton(r, text="Load", width=60, height=26,
+                      command=self._preset_load).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(r, text="Save", width=60, height=26,
+                      command=self._preset_save).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(r, text="Del", width=42, height=26,
+                      fg_color="#5a3a3a", hover_color="#7a4a4a",
+                      command=self._preset_delete).pack(side="left")
 
         # ── Quality ───────────────────────────────────────────────────────────
         _section(f, "Quality")
@@ -1330,6 +1527,31 @@ class UnshackleGUI(ctk.CTk):
 
         self._try_autoload_config()
 
+    # ── History tab ────────────────────────────────────────────────────────────
+
+    def _build_history_tab(self) -> None:
+        tab = self._tabs.tab("History")
+        tab.grid_rowconfigure(0, weight=1)
+        tab.grid_columnconfigure(0, weight=1)
+
+        self._history_text = ctk.CTkTextbox(
+            tab, state="disabled",
+            font=ctk.CTkFont(family="Consolas", size=12),
+            spacing2=2)
+        self._history_text.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+
+        bar = ctk.CTkFrame(tab, fg_color="transparent")
+        bar.grid(row=1, column=0, sticky="ew")
+        ctk.CTkButton(bar, text="🔄  Refresh", width=100,
+                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      command=self._refresh_history_ui).pack(side="left", padx=(0, 6))
+        ctk.CTkButton(bar, text="🗑  Clear History", width=140,
+                      fg_color=("#c62828", "#b71c1c"),
+                      hover_color=("#b71c1c", "#7f0000"),
+                      command=self._clear_history).pack(side="left")
+
+        self._refresh_history_ui()
+
     def _setup_yaml_tags(self) -> None:
         tk = self._config_editor._textbox
         fn = ctk.CTkFont(family="Consolas", size=12)
@@ -1561,6 +1783,11 @@ class UnshackleGUI(ctk.CTk):
         service = self._service_var.get()
         title   = self._title_entry.get().strip()
         label   = f"{service} — {title[:70]}"
+        with self._queue_lock:
+            for item in self._dl_queue:
+                if item.label == label:
+                    messagebox.showwarning("Duplicate", f"'{label}' is already in the queue.")
+                    return
         item    = QueueItem(cmd, label)
         with self._queue_lock:
             self._dl_queue.append(item)
@@ -1795,6 +2022,8 @@ class UnshackleGUI(ctk.CTk):
         if stopped:
             self._out_queue.put("\n[Stopped by user]\n")
             self._update_status("■ Stopped", ("#e65100", "#ff9800"))
+            self.after(0, lambda: self._progress_bar.set(0))
+            self.after(0, lambda: self._progress_pct_label.configure(text=""))
         else:
             messagebox.showinfo("No Process", "No active download to stop.")
 
@@ -1845,6 +2074,9 @@ class UnshackleGUI(ctk.CTk):
         interactive = self._select_titles_var.get()
         status_msg = "● Select titles in console — use keyboard" if interactive else "● Downloading…"
         self._update_status(status_msg, ("#1565c0", "#4da6ff"))
+        self._progress_pct = None
+        self.after(0, lambda: self._progress_bar.set(0))
+        self.after(0, lambda: self._progress_pct_label.configure(text=""))
         self._out_queue.put(f"\n$ {' '.join(cmd)}\n{'─' * 60}\n")
 
         env = os.environ.copy()
@@ -1864,6 +2096,8 @@ class UnshackleGUI(ctk.CTk):
         _do_rename  = self._vcodec_plain_var.get()
         _out_dir    = self._get_output_dir() if _do_rename else None
         _start_time = _time.time()
+        _service = self._service_var.get()
+        _title   = self._title_entry.get().strip()
 
         if HAS_WINPTY:
             self._run_with_pty(cmd, env)
@@ -1911,11 +2145,20 @@ class UnshackleGUI(ctk.CTk):
             if exit_code in (0, 3221225786):
                 self._update_status("✓ Done", ("#2e7d32", "#4caf50"))
                 self._notify_done(success=True)
+                self._add_history_entry(self._service_var.get(),
+                                        self._title_entry.get().strip(),
+                                        "Done", str(exit_code))
+                self.after(0, lambda: self._progress_bar.set(1))
+                self.after(0, lambda: self._progress_pct_label.configure(text="Done"))
             else:
                 self._update_status(f"✗ Failed — exit {exit_code}", ("#b71c1c", "#ef5350"))
                 self._notify_done(success=False)
+                self._add_history_entry(self._service_var.get(),
+                                        self._title_entry.get().strip(),
+                                        "Failed", str(exit_code))
+                self.after(0, lambda: self._progress_bar.set(0))
+                self.after(0, lambda: self._progress_pct_label.configure(text=""))
         except Exception as exc:
-            self._out_queue.put(f"PTY error: {exc}\n")
             self._update_status("✗ PTY error", ("#b71c1c", "#ef5350"))
         finally:
             self._active_pty  = None
@@ -1953,9 +2196,19 @@ class UnshackleGUI(ctk.CTk):
             if rc == 0:
                 self._update_status(f"✓ Done — exit {rc}", ("#2e7d32", "#4caf50"))
                 self._notify_done(success=True)
+                self._add_history_entry(self._service_var.get(),
+                                        self._title_entry.get().strip(),
+                                        "Done", str(rc))
+                self.after(0, lambda: self._progress_bar.set(1))
+                self.after(0, lambda: self._progress_pct_label.configure(text="Done"))
             else:
                 self._update_status(f"✗ Failed — exit {rc}", ("#b71c1c", "#ef5350"))
                 self._notify_done(success=False)
+                self._add_history_entry(self._service_var.get(),
+                                        self._title_entry.get().strip(),
+                                        "Failed", str(rc))
+                self.after(0, lambda: self._progress_bar.set(0))
+                self.after(0, lambda: self._progress_pct_label.configure(text=""))
         except FileNotFoundError:
             self._out_queue.put(
                 "ERROR: 'unshackle' was not found.\n"
@@ -1972,11 +2225,13 @@ class UnshackleGUI(ctk.CTk):
         if self._pty_active and self._pty_renderer is not None:
             # PTY mode: render the pyte screen buffer every tick
             self._pty_renderer.render()
+            self._parse_progress_from_pty()
         else:
             # Pipe mode (or PTY finished): drain plain-text queue → AnsiWriter
             try:
                 while True:
                     text = self._out_queue.get_nowait()
+                    self._parse_progress_from_text(text)
                     if self._ansi_console:
                         self._ansi_console.write(text)
                     if self._ansi_inline:
@@ -1984,6 +2239,38 @@ class UnshackleGUI(ctk.CTk):
             except queue.Empty:
                 pass
         self.after(150, self._poll_output)
+
+    _PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+    def _parse_progress_from_text(self, text: str) -> None:
+        matches = self._PROGRESS_RE.findall(text)
+        if matches:
+            try:
+                pct = float(matches[-1]) / 100.0
+                self._progress_pct = pct
+                self.after(0, lambda p=pct: self._progress_bar.set(p))
+                self.after(0, lambda m=matches[-1]: self._progress_pct_label.configure(
+                    text=f"{m}%"))
+            except (ValueError, IndexError):
+                pass
+
+    def _parse_progress_from_pty(self) -> None:
+        if self._pty_renderer is None or self._pty_renderer._screen is None:
+            return
+        screen = self._pty_renderer._screen
+        for r in range(min(screen.lines, 5)):
+            line = "".join(c.data for c in screen.buffer[r].values()).strip()
+            matches = self._PROGRESS_RE.findall(line)
+            if matches:
+                try:
+                    pct = float(matches[-1]) / 100.0
+                    self._progress_pct = pct
+                    self.after(0, lambda p=pct: self._progress_bar.set(p))
+                    self.after(0, lambda m=matches[-1]: self._progress_pct_label.configure(
+                        text=f"{m}%"))
+                except (ValueError, IndexError):
+                    pass
+                break
 
     def _clear_box(self, writer: "AnsiWriter | PtyRenderer") -> None:
         writer.clear()
@@ -2071,6 +2358,7 @@ class UnshackleGUI(ctk.CTk):
     def _settings_get(self) -> dict:
         return {
             "window_geometry":  self.geometry(),
+            "theme":            self._theme_var.get(),
             "service":          self._service_var.get(),
             "title":            self._title_entry.get(),
             "profile":          self._profile_combo.get(),
@@ -2237,6 +2525,80 @@ class UnshackleGUI(ctk.CTk):
         _set_bool(self._no_proxy_var,           "no_proxy")
         _set_bool(self._remote_var,             "remote")
         _set_entry(self._server_entry,          "server")
+
+        theme = s.get("theme")
+        if theme in ("Dark", "Light"):
+            ctk.set_appearance_mode(theme)
+            self._theme_var.set(theme)
+
+    def _apply_settings_dict(self, s: dict) -> None:
+        if svc := s.get("service"):
+            self._service_var.set(svc)
+        _set_e = lambda w, k: (w.delete(0, "end"), w.insert(0, str(s.get(k, ""))))
+        _set_e(self._title_entry,           "title")
+        if prof := s.get("profile"):
+            self._profile_combo.set(prof)
+        _set_dict_bool(self._quality_vars,      "quality")
+        _set_dict_bool(self._vcodec_vars,       "vcodec")
+        _set_bool(self._vcodec_plain_var,       "vcodec_plain")
+        _set_dict_bool(self._acodec_vars,       "acodec")
+        _set_dict_bool(self._range_vars,        "range")
+        _set_e(self._lang_entry,            "lang")
+        _set_e(self._alang_entry,           "alang")
+        _set_e(self._vlang_entry,           "vlang")
+        _set_e(self._slang_entry,           "slang")
+        _set_e(self._require_subs_entry,    "require_subs")
+        _set_bool(self._forced_subs_var,        "forced_subs")
+        _set_bool(self._exact_lang_var,         "exact_lang")
+        _set_e(self._wanted_entry,          "wanted")
+        _set_bool(self._latest_ep_var,          "latest_ep")
+        _set_bool(self._select_titles_var,      "select_titles")
+        _set_bool(self._video_only_var,         "video_only")
+        _set_bool(self._audio_only_var,         "audio_only")
+        _set_bool(self._subs_only_var,          "subs_only")
+        _set_bool(self._chapters_only_var,      "chapters_only")
+        _set_bool(self._no_video_var,           "no_video")
+        _set_bool(self._no_audio_var,           "no_audio")
+        _set_bool(self._no_subs_var,            "no_subs")
+        _set_bool(self._no_chapters_var,        "no_chapters")
+        _set_bool(self._audio_desc_var,         "audio_desc")
+        _set_bool(self._no_atmos_var,           "no_atmos")
+        _set_bool(self._split_audio_var,        "split_audio")
+        if sf := s.get("sub_format"):
+            self._sub_format_combo.set(sf)
+        _set_e(self._tag_entry,             "tag")
+        _set_e(self._tmdb_entry,            "tmdb")
+        _set_e(self._imdb_entry,            "imdb")
+        _set_e(self._animeapi_entry,        "animeapi")
+        _set_bool(self._repack_var,             "repack")
+        _set_bool(self._enrich_var,             "enrich")
+        _set_e(self._output_entry,          "output")
+        _set_bool(self._no_mux_var,             "no_mux")
+        _set_bool(self._no_folder_var,          "no_folder")
+        _set_bool(self._no_source_var,          "no_source")
+        _set_e(self._downloads_entry,       "downloads")
+        _set_e(self._workers_entry,         "workers")
+        _set_e(self._slow_entry,            "slow")
+        _set_e(self._vbitrate_entry,        "vbitrate")
+        _set_e(self._abitrate_entry,        "abitrate")
+        _set_e(self._vbitrate_range_entry,  "vbitrate_range")
+        _set_e(self._abitrate_range_entry,  "abitrate_range")
+        _set_e(self._channels_entry,        "channels")
+        _set_bool(self._worst_var,              "worst")
+        _set_bool(self._best_available_var,     "best_available")
+        _set_bool(self._cdm_only_var,           "cdm_only")
+        _set_bool(self._vaults_only_var,        "vaults_only")
+        _set_bool(self._skip_dl_var,            "skip_dl")
+        _set_bool(self._export_var,             "export")
+        _set_bool(self._list_var,               "list")
+        _set_bool(self._list_titles_var,        "list_titles")
+        _set_bool(self._debug_var,              "debug")
+        _set_bool(self._no_cache_var,           "no_cache")
+        _set_bool(self._reset_cache_var,        "reset_cache")
+        _set_e(self._proxy_entry,           "proxy")
+        _set_bool(self._no_proxy_var,           "no_proxy")
+        _set_bool(self._remote_var,             "remote")
+        _set_e(self._server_entry,          "server")
 
     def _on_close(self) -> None:
         self._save_settings()
