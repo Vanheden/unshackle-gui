@@ -655,6 +655,8 @@ class UnshackleGUI(ctk.CTk):
         self._queue_rows: list[ctk.CTkFrame] = []
         self._config_path: Path | None = None
         self._progress_pct: float | None = None
+        self._dl_start_time: float | None = None
+        self._elapsed_after_id: str | None = None
         if getattr(sys, "frozen", False):
             self._settings_path = Path(sys.executable).parent / "gui_settings.json"
             self._presets_path   = Path(sys.executable).parent / "gui_presets.json"
@@ -1042,13 +1044,16 @@ class UnshackleGUI(ctk.CTk):
             anchor="w",
         )
         self._status_label.pack(side="left", padx=10, pady=4)
-        self._progress_bar = ctk.CTkProgressBar(status_bar, width=200, height=14)
-        self._progress_bar.pack(side="right", padx=10, pady=4)
-        self._progress_bar.set(0)
-        self._progress_pct_label = ctk.CTkLabel(
-            status_bar, text="", width=50,
-            font=ctk.CTkFont(size=11), anchor="e")
-        self._progress_pct_label.pack(side="right", padx=(0, 4))
+        self._elapsed_label = ctk.CTkLabel(
+            status_bar, text="", width=80,
+            font=ctk.CTkFont(size=11), anchor="e",
+            text_color=("#444444", "#aaaaaa"))
+        self._elapsed_label.pack(side="right", padx=(0, 4))
+        self._speed_label = ctk.CTkLabel(
+            status_bar, text="", width=200,
+            font=ctk.CTkFont(size=11), anchor="e",
+            text_color=("#444444", "#aaaaaa"))
+        self._speed_label.pack(side="right", padx=(0, 4))
 
     # ── Download tab ──────────────────────────────────────────────────────────
 
@@ -2022,10 +2027,11 @@ class UnshackleGUI(ctk.CTk):
         if stopped:
             self._out_queue.put("\n[Stopped by user]\n")
             self._update_status("■ Stopped", ("#e65100", "#ff9800"))
-            self.after(0, lambda: self._progress_bar.set(0))
-            self.after(0, lambda: self._progress_pct_label.configure(text=""))
+            self.after(0, lambda: self._speed_label.configure(text=""))
+            self.after(0, lambda: self._elapsed_label.configure(text=""))
+            self._stop_elapsed_timer()
         else:
-            messagebox.showinfo("No Process", "No active download to stop.")
+            pass
 
     # ─────────────────────────────────────────────────────────────────────────
     # Process execution
@@ -2075,8 +2081,9 @@ class UnshackleGUI(ctk.CTk):
         status_msg = "● Select titles in console — use keyboard" if interactive else "● Downloading…"
         self._update_status(status_msg, ("#1565c0", "#4da6ff"))
         self._progress_pct = None
-        self.after(0, lambda: self._progress_bar.set(0))
-        self.after(0, lambda: self._progress_pct_label.configure(text=""))
+        self.after(0, lambda: self._speed_label.configure(text=""))
+        self.after(0, lambda: self._elapsed_label.configure(text=""))
+        self._start_elapsed_timer()
         self._out_queue.put(f"\n$ {' '.join(cmd)}\n{'─' * 60}\n")
 
         env = os.environ.copy()
@@ -2148,21 +2155,18 @@ class UnshackleGUI(ctk.CTk):
                 self._add_history_entry(self._service_var.get(),
                                         self._title_entry.get().strip(),
                                         "Done", str(exit_code))
-                self.after(0, lambda: self._progress_bar.set(1))
-                self.after(0, lambda: self._progress_pct_label.configure(text="Done"))
             else:
                 self._update_status(f"✗ Failed — exit {exit_code}", ("#b71c1c", "#ef5350"))
                 self._notify_done(success=False)
                 self._add_history_entry(self._service_var.get(),
                                         self._title_entry.get().strip(),
                                         "Failed", str(exit_code))
-                self.after(0, lambda: self._progress_bar.set(0))
-                self.after(0, lambda: self._progress_pct_label.configure(text=""))
         except Exception as exc:
             self._update_status("✗ PTY error", ("#b71c1c", "#ef5350"))
         finally:
             self._active_pty  = None
             self._pty_active  = False
+            self._stop_elapsed_timer()
 
     def _run_with_pipe(self, cmd: list[str], env: dict[str, str]) -> None:
         """Fallback: pipe-based subprocess. Live progress bars may not stream."""
@@ -2199,16 +2203,12 @@ class UnshackleGUI(ctk.CTk):
                 self._add_history_entry(self._service_var.get(),
                                         self._title_entry.get().strip(),
                                         "Done", str(rc))
-                self.after(0, lambda: self._progress_bar.set(1))
-                self.after(0, lambda: self._progress_pct_label.configure(text="Done"))
             else:
                 self._update_status(f"✗ Failed — exit {rc}", ("#b71c1c", "#ef5350"))
                 self._notify_done(success=False)
                 self._add_history_entry(self._service_var.get(),
                                         self._title_entry.get().strip(),
                                         "Failed", str(rc))
-                self.after(0, lambda: self._progress_bar.set(0))
-                self.after(0, lambda: self._progress_pct_label.configure(text=""))
         except FileNotFoundError:
             self._out_queue.put(
                 "ERROR: 'unshackle' was not found.\n"
@@ -2216,6 +2216,7 @@ class UnshackleGUI(ctk.CTk):
             self._update_status("✗ unshackle not found", ("#b71c1c", "#ef5350"))
         finally:
             self._active_proc = None
+            self._stop_elapsed_timer()
 
     # ─────────────────────────────────────────────────────────────────────────
     # Output helpers
@@ -2241,6 +2242,8 @@ class UnshackleGUI(ctk.CTk):
         self.after(150, self._poll_output)
 
     _PROGRESS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+    _SPEED_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(KB/s|MB/s|GB/s|kB/s|kB/s|MiB/s|GiB/s|kbps|Mbps|Gbps)", re.IGNORECASE)
+    _ETA_RE = re.compile(r"(?:ETA|eta|ETA[:\s]|eta[:\s])\s*(\d+[dhms]?\d*[dhms]?\d*[dhms]?\d*|\d+:\d+(?::\d+)?)", re.IGNORECASE)
 
     def _parse_progress_from_text(self, text: str) -> None:
         matches = self._PROGRESS_RE.findall(text)
@@ -2248,29 +2251,68 @@ class UnshackleGUI(ctk.CTk):
             try:
                 pct = float(matches[-1]) / 100.0
                 self._progress_pct = pct
-                self.after(0, lambda p=pct: self._progress_bar.set(p))
-                self.after(0, lambda m=matches[-1]: self._progress_pct_label.configure(
-                    text=f"{m}%"))
             except (ValueError, IndexError):
                 pass
+        speed_m = self._SPEED_RE.search(text)
+        if speed_m:
+            speed_str = speed_m.group(0)
+            self.after(0, lambda s=speed_str: self._speed_label.configure(text=s))
+        eta_m = self._ETA_RE.search(text)
+        if eta_m:
+            self.after(0, lambda e=eta_m.group(1): self._speed_label.configure(
+                text=self._speed_label.cget("text") + f"  ETA {e}" if self._speed_label.cget("text") else f"ETA {e}"))
 
     def _parse_progress_from_pty(self) -> None:
         if self._pty_renderer is None or self._pty_renderer._screen is None:
             return
         screen = self._pty_renderer._screen
-        for r in range(min(screen.lines, 5)):
+        for r in range(screen.lines - 1, max(screen.lines - 10, -1), -1):
             line = "".join(c.data for c in screen.buffer[r].values()).strip()
+            if not line:
+                continue
             matches = self._PROGRESS_RE.findall(line)
             if matches:
                 try:
                     pct = float(matches[-1]) / 100.0
                     self._progress_pct = pct
-                    self.after(0, lambda p=pct: self._progress_bar.set(p))
-                    self.after(0, lambda m=matches[-1]: self._progress_pct_label.configure(
-                        text=f"{m}%"))
                 except (ValueError, IndexError):
                     pass
+            speed_m = self._SPEED_RE.search(line)
+            if speed_m:
+                speed_str = speed_m.group(0)
+                eta_text = speed_str
+                eta_m = self._ETA_RE.search(line)
+                if eta_m:
+                    eta_text += f"  ETA {eta_m.group(1)}"
+                self.after(0, lambda t=eta_text: self._speed_label.configure(text=t))
                 break
+
+    @staticmethod
+    def _fmt_elapsed(seconds: float) -> str:
+        s = int(seconds)
+        if s < 60:
+            return f"{s}s"
+        m, s = divmod(s, 60)
+        if m < 60:
+            return f"{m}:{s:02d}"
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}"
+
+    def _start_elapsed_timer(self) -> None:
+        self._dl_start_time = time.monotonic()
+        self._update_elapsed()
+
+    def _update_elapsed(self) -> None:
+        if self._dl_start_time is not None:
+            elapsed = time.monotonic() - self._dl_start_time
+            self._elapsed_label.configure(text=self._fmt_elapsed(elapsed))
+            self._elapsed_after_id = self.after(500, self._update_elapsed)
+
+    def _stop_elapsed_timer(self) -> None:
+        self._dl_start_time = None
+        if self._elapsed_after_id is not None:
+            self.after_cancel(self._elapsed_after_id)
+            self._elapsed_after_id = None
 
     def _clear_box(self, writer: "AnsiWriter | PtyRenderer") -> None:
         writer.clear()
