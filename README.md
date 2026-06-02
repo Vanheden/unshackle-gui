@@ -11,18 +11,6 @@ A graphical interface for [Unshackle](https://github.com/unshackle-dl/unshackle)
 - Command preview before running
 - Standalone `.exe` build via PyInstaller
 
-### Recently added CLI flags
-
-| Flag | Description |
-|------|-------------|
-| `AC4` codec | New audio codec checkbox (v1.4.8+) |
-| `-rvb` / `-rab` | Probe real video/audio bitrate instead of manifest values (v5.1.0+) |
-| `--no-proxy-download` | Bypass proxy for segment downloads only (v5.0.0+) |
-
-### Editor Config
-
-The [`.editorconfig`](.editorconfig) keeps line endings consistent — LF for most files, CRLF for `.bat` and `.py` (Windows batch scripts require CRLF, and the GUI uses CRLF for Python compatibility).
-
 ## Requirements
 
 - [Unshackle](https://github.com/unshackle-dl/unshackle) installed and available in `PATH`
@@ -70,6 +58,8 @@ Double-click **`build.bat`** — it installs dependencies and produces `dist\uns
 | **Config** | Load, edit and save `unshackle.yaml` |
 
 ## Educational Purpose Only
+
+Do not use unshackle for content you lack the rights to. Keep the core free and open; keep service code private. Be kind.
 
 ## License
 
