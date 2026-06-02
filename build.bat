@@ -31,6 +31,7 @@ if %errorlevel% equ 0 (
 :: ── Install dependencies ─────────────────────────────────────────────────────
 echo.
 echo [2/4] Installing dependencies...
+set UV_LINK_MODE=copy
 %PIP% install --quiet --upgrade customtkinter pywinpty pyte pyinstaller
 if %errorlevel% neq 0 ( echo ERROR: pip install failed. & pause & exit /b 1 )
 

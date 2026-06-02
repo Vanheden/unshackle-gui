@@ -110,7 +110,7 @@ def _discover_services() -> list[str]:
 
 SERVICES = _discover_services()
 VIDEO_CODECS = ["H.264", "H.265", "VP9", "AV1", "VC-1", "VP8"]
-AUDIO_CODECS = ["AAC", "DD", "DD+", "FLAC", "DTS", "OPUS", "ALAC"]
+AUDIO_CODECS = ["AAC", "DD", "DD+", "FLAC", "DTS", "OPUS", "ALAC", "AC4"]
 COLOR_RANGES = ["SDR", "HLG", "HDR10", "HDR10+", "DV", "HYBRID"]
 QUALITIES    = ["2160p", "1080p", "720p", "480p", "360p", "240p"]
 SUB_FORMATS  = ["", "SRT", "ASS", "TTML", "VTT", "STPP", "WVTT"]
@@ -884,6 +884,8 @@ class UnshackleGUI(ctk.CTk):
                     self._list_var, self._list_titles_var,
                     self._debug_var, self._no_cache_var,
                     self._reset_cache_var, self._no_proxy_var,
+                    self._no_proxy_dl_var, self._real_video_bitrate_var,
+                    self._real_audio_bitrate_var,
                     self._remote_var):
             var.set(False)
 
@@ -1393,6 +1395,13 @@ class UnshackleGUI(ctk.CTk):
         _check(r, "Worst (lowest bitrate within -q)",  self._worst_var,          width=230)
         _check(r, "Best Available (fallback quality)", self._best_available_var, width=230)
 
+        # ── Real Bitrate Probing ─────────────────────────────────────────────
+        r = _row(f)
+        self._real_video_bitrate_var = ctk.BooleanVar()
+        self._real_audio_bitrate_var = ctk.BooleanVar()
+        _check(r, "Probe Real Video Bitrate (-rvb)", self._real_video_bitrate_var, width=230)
+        _check(r, "Probe Real Audio Bitrate (-rab)", self._real_audio_bitrate_var, width=230)
+
         # ── Keys & DRM ────────────────────────────────────────────────────────
         _section(f, "Keys & DRM")
 
@@ -1439,6 +1448,10 @@ class UnshackleGUI(ctk.CTk):
         r = _row(f)
         self._no_proxy_var = ctk.BooleanVar()
         _check(r, "Force Disable All Proxy", self._no_proxy_var, width=200)
+
+        r = _row(f)
+        self._no_proxy_dl_var = ctk.BooleanVar()
+        _check(r, "No Proxy for Downloads (manifest/license still proxied)", self._no_proxy_dl_var, width=360)
 
         # ── Remote Server ─────────────────────────────────────────────────────
         _section(f, "Remote Server")
@@ -1628,77 +1641,77 @@ class UnshackleGUI(ctk.CTk):
         # ── Profile ───────────────────────────────────────────────────────────
         p = self._profile_combo.get().strip()
         if p and p != "default":
-            cmd += ["--profile", p]
+            cmd += ["-p", p]
 
         # ── Quality ───────────────────────────────────────────────────────────
         qlist = [q for q, v in self._quality_vars.items() if v.get()]
         if qlist:
-            cmd += ["--quality", ",".join(qlist)]
+            cmd += ["-q", ",".join(qlist)]
 
         # ── Codecs ────────────────────────────────────────────────────────────
         vcodecs = [c for c, v in self._vcodec_vars.items() if v.get()]
         if vcodecs:
-            cmd += ["--vcodec", ",".join(vcodecs)]
+            cmd += ["-v", ",".join(vcodecs)]
 
         acodecs = [c for c, v in self._acodec_vars.items() if v.get()]
         if acodecs:
-            cmd += ["--acodec", ",".join(acodecs)]
+            cmd += ["-a", ",".join(acodecs)]
 
         # ── Bitrates ──────────────────────────────────────────────────────────
         if vb := self._vbitrate_entry.get().strip():
-            cmd += ["--vbitrate", vb]
+            cmd += ["-vb", vb]
         if ab := self._abitrate_entry.get().strip():
-            cmd += ["--abitrate", ab]
+            cmd += ["-ab", ab]
         if vbr := self._vbitrate_range_entry.get().strip():
-            cmd += ["--vbitrate-range", vbr]
+            cmd += ["-vb-range", vbr]
         if abr := self._abitrate_range_entry.get().strip():
-            cmd += ["--abitrate-range", abr]
+            cmd += ["-ab-range", abr]
         if ch := self._channels_entry.get().strip():
-            cmd += ["--channels", ch]
+            cmd += ["-c", ch]
 
         # ── Color Range ───────────────────────────────────────────────────────
         _range_cli = {"SDR": "sdr", "HLG": "hlg", "HDR10": "hdr10",
                       "HDR10+": "hdr10p", "DV": "dv", "HYBRID": "hybrid"}
         ranges = [_range_cli.get(r, r.lower()) for r, v in self._range_vars.items() if v.get()]
         if ranges and ranges != ["sdr"]:       # sdr is the default; skip if only SDR
-            cmd += ["--range", ",".join(ranges)]
+            cmd += ["-r", ",".join(ranges)]
 
         # ── Languages ─────────────────────────────────────────────────────────
         if lang := self._lang_entry.get().strip():
-            cmd += ["--lang", lang]
+            cmd += ["-l", lang]
         if al := self._alang_entry.get().strip():
-            cmd += ["--a-lang", al]
+            cmd += ["-al", al]
         if vl := self._vlang_entry.get().strip():
-            cmd += ["--v-lang", vl]
+            cmd += ["-vl", vl]
         sl = self._slang_entry.get().strip()
         if sl and sl != "all":
-            cmd += ["--s-lang", sl]
+            cmd += ["-sl", sl]
         if rs := self._require_subs_entry.get().strip():
             cmd += ["--require-subs", rs]
         if self._forced_subs_var.get():
-            cmd += ["--forced-subs"]
+            cmd += ["-fs"]
         if self._exact_lang_var.get():
             cmd += ["--exact-lang"]
 
         # ── Episodes ──────────────────────────────────────────────────────────
         if w := self._wanted_entry.get().strip():
-            cmd += ["--wanted", w]
+            cmd += ["-w", w]
         if self._latest_ep_var.get():
             cmd += ["--latest-episode"]
         if self._select_titles_var.get():
             cmd += ["--select-titles"]
 
         # ── Track selection flags ─────────────────────────────────────────────
-        if self._video_only_var.get():    cmd += ["--video-only"]
-        if self._audio_only_var.get():    cmd += ["--audio-only"]
-        if self._subs_only_var.get():     cmd += ["--subs-only"]
-        if self._chapters_only_var.get(): cmd += ["--chapters-only"]
-        if self._no_video_var.get():      cmd += ["--no-video"]
-        if self._no_audio_var.get():      cmd += ["--no-audio"]
-        if self._no_subs_var.get():       cmd += ["--no-subs"]
-        if self._no_chapters_var.get():   cmd += ["--no-chapters"]
-        if self._audio_desc_var.get():    cmd += ["--audio-description"]
-        if self._no_atmos_var.get():      cmd += ["--noatmos"]
+        if self._video_only_var.get():    cmd += ["-V"]
+        if self._audio_only_var.get():    cmd += ["-A"]
+        if self._subs_only_var.get():     cmd += ["-S"]
+        if self._chapters_only_var.get(): cmd += ["-C"]
+        if self._no_video_var.get():      cmd += ["-nv"]
+        if self._no_audio_var.get():      cmd += ["-na"]
+        if self._no_subs_var.get():       cmd += ["-ns"]
+        if self._no_chapters_var.get():   cmd += ["-nc"]
+        if self._audio_desc_var.get():    cmd += ["-ad"]
+        if self._no_atmos_var.get():      cmd += ["-naa"]
         if self._split_audio_var.get():   cmd += ["--split-audio"]
 
         # ── Subtitle format ───────────────────────────────────────────────────
@@ -1719,7 +1732,7 @@ class UnshackleGUI(ctk.CTk):
 
         # ── Output ────────────────────────────────────────────────────────────
         if out := self._output_entry.get().strip():
-            cmd += ["--output", out]
+            cmd += ["-o", out]
         if self._no_mux_var.get():    cmd += ["--no-mux"]
         if self._no_folder_var.get(): cmd += ["--no-folder"]
         if self._no_source_var.get(): cmd += ["--no-source"]
@@ -1735,6 +1748,8 @@ class UnshackleGUI(ctk.CTk):
         # ── Quality behaviour ─────────────────────────────────────────────────
         if self._worst_var.get():          cmd += ["--worst"]
         if self._best_available_var.get(): cmd += ["--best-available"]
+        if self._real_video_bitrate_var.get(): cmd += ["-rvb"]
+        if self._real_audio_bitrate_var.get(): cmd += ["-rab"]
 
         # ── Keys & DRM ────────────────────────────────────────────────────────
         if self._cdm_only_var.get():
@@ -1756,6 +1771,7 @@ class UnshackleGUI(ctk.CTk):
         if proxy := self._proxy_entry.get().strip():
             cmd += ["--proxy", proxy]
         if self._no_proxy_var.get(): cmd += ["--no-proxy"]
+        if self._no_proxy_dl_var.get(): cmd += ["--no-proxy-download"]
 
         # ── Remote ────────────────────────────────────────────────────────────
         if self._remote_var.get():
@@ -2462,6 +2478,9 @@ class UnshackleGUI(ctk.CTk):
             "reset_cache":      self._reset_cache_var.get(),
             "proxy":            self._proxy_entry.get(),
             "no_proxy":         self._no_proxy_var.get(),
+            "no_proxy_dl":      self._no_proxy_dl_var.get(),
+            "real_video_bitrate": self._real_video_bitrate_var.get(),
+            "real_audio_bitrate": self._real_audio_bitrate_var.get(),
             "remote":           self._remote_var.get(),
             "server":           self._server_entry.get(),
         }
@@ -2565,6 +2584,9 @@ class UnshackleGUI(ctk.CTk):
         _set_bool(self._reset_cache_var,        "reset_cache")
         _set_entry(self._proxy_entry,           "proxy")
         _set_bool(self._no_proxy_var,           "no_proxy")
+        _set_bool(self._no_proxy_dl_var,        "no_proxy_dl")
+        _set_bool(self._real_video_bitrate_var, "real_video_bitrate")
+        _set_bool(self._real_audio_bitrate_var, "real_audio_bitrate")
         _set_bool(self._remote_var,             "remote")
         _set_entry(self._server_entry,          "server")
 
@@ -2639,6 +2661,9 @@ class UnshackleGUI(ctk.CTk):
         _set_bool(self._reset_cache_var,        "reset_cache")
         _set_e(self._proxy_entry,           "proxy")
         _set_bool(self._no_proxy_var,           "no_proxy")
+        _set_bool(self._no_proxy_dl_var,        "no_proxy_dl")
+        _set_bool(self._real_video_bitrate_var, "real_video_bitrate")
+        _set_bool(self._real_audio_bitrate_var, "real_audio_bitrate")
         _set_bool(self._remote_var,             "remote")
         _set_e(self._server_entry,          "server")
 
